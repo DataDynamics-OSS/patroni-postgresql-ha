@@ -294,17 +294,24 @@ all:
 1. **서버 준비.** 방식 A라면 etcd용 3대 + DB용 2대 이상, 방식 B라면 3대. 모든 서버에
    제어 노드에서 **SSH 키로 접속**할 수 있고 **sudo 권한**이 있어야 합니다.
 
-2. **네트워크/방화벽 개방.** 노드 사이에 아래 포트가 열려 있어야 합니다.
+2. **네트워크/방화벽 개방.** 노드 사이에 아래 포트가 열려 있어야 합니다. 포트는 모두
+   `group_vars/all.yml`의 변수로 바꿀 수 있으며(기본값은 아래 표), **포트를 바꾸면 방화벽에서
+   열어줄 포트도 같은 값으로 맞춰야** 합니다.
 
-   | 포트 | 용도 |
-   |------|------|
-   | 2379, 2380 | etcd (클라이언트 / 피어) |
-   | 5432 | PostgreSQL |
-   | 6432 | PgBouncer |
-   | 8008 | Patroni REST API (HAProxy 헬스체크) |
-   | 5000, 5001 | HAProxy (쓰기 / 읽기) |
-   | 7000 | HAProxy 통계 화면 |
-   | VRRP (프로토콜 112) | Keepalived VIP 통신 |
+   | 기본 포트 | 용도 | 변경 변수 (`all.yml`) |
+   |------|------|------|
+   | 2379, 2380 | etcd (클라이언트 / 피어) | `etcd_client_port` / `etcd_peer_port` |
+   | 5432 | PostgreSQL | `postgresql_port` |
+   | 6432 | PgBouncer | `pgbouncer_port` |
+   | 8008 | Patroni REST API (HAProxy 헬스체크) | `patroni_rest_port` |
+   | 5000, 5001 | HAProxy (쓰기 / 읽기) | `haproxy_primary_port` / `haproxy_replica_port` |
+   | 7000 | HAProxy 통계 화면 | `haproxy_stats_port` |
+   | VRRP (프로토콜 112) | Keepalived VIP 통신 | — (VRRP 프로토콜, 포트 없음) |
+
+   > 참고: PostgreSQL·PgBouncer의 수신 주소는 `postgresql_listen_address`,
+   > `pgbouncer_listen_address`(기본 `0.0.0.0`)로 따로 조정합니다. HAProxy 포트
+   > (`haproxy_primary_port`/`haproxy_replica_port`)를 바꿨다면 12장의 **애플리케이션
+   > 접속 포트**도 새 값으로 맞춰야 합니다.
 
 3. **제어 노드에 Ansible과 컬렉션 설치.**
 
