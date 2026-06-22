@@ -7,3 +7,6 @@ group_vars/vault.yml
 # Ansible artifacts
 *.log
 fact_cache/
+
+# 내부→공개 repo 발행 스크립트 (공개 repo로 나가면 안 됨)
+scripts/publish-public.sh
