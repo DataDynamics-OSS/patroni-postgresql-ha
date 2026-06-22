@@ -1,0 +1,9 @@
+# Secrets — never commit decrypted vault
+group_vars/vault.yml
+*.retry
+*.vault-pass
+.vault_pass.txt
+
+# Ansible artifacts
+*.log
+fact_cache/

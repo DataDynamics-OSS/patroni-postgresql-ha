@@ -1,0 +1,17 @@
+---
+# =============================================================================
+# 운영용 비밀번호 템플릿
+# -----------------------------------------------------------------------------
+# 이 파일을 group_vars/vault.yml 로 복사한 뒤 실제 비밀번호로 채우고 암호화하세요.
+#   cp group_vars/vault.yml.example group_vars/vault.yml
+#   ansible-vault encrypt group_vars/vault.yml
+# 실행 시:
+#   ansible-playbook site.yml --ask-vault-pass
+#
+# 아래 키들은 group_vars/all.yml 의 임시(ChangeMe_*) 비밀번호를 덮어씁니다.
+# =============================================================================
+postgres_superuser_password:    "여기에_슈퍼유저_비밀번호"
+postgres_replication_password:  "여기에_복제계정_비밀번호"
+patroni_rewind_password:        "여기에_rewind계정_비밀번호"
+app_db_password:                "여기에_앱_비밀번호"
+pgbouncer_admin_password:       "여기에_pgbouncer관리자_비밀번호"

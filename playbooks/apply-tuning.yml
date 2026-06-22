@@ -1,0 +1,86 @@
+---
+# =============================================================================
+# PostgreSQL 튜닝 파라미터를 "실행 중인" 클러스터에 적용하는 playbook
+# -----------------------------------------------------------------------------
+# group_vars/all.yml 의 postgresql_tuning_profile / postgresql_max_connections /
+# postgresql_parameters_override 를 합쳐 patronictl edit-config 로 DCS(etcd)에
+# 반영합니다. Patroni 가 즉시 reload 하며, 재시작이 필요한 항목은 "pending restart"
+# 로 표시됩니다(이 경우 playbooks/restart-postgresql.yml 실행).
+#
+# 사용법:
+#   ansible-playbook playbooks/apply-tuning.yml
+#   ansible-playbook playbooks/apply-tuning.yml -e postgresql_tuning_profile=medium
+#   ansible-playbook playbooks/apply-tuning.yml -e postgresql_max_connections=500
+#   ansible-playbook playbooks/apply-tuning.yml -e restart_after_apply=true
+# =============================================================================
+- name: PostgreSQL 튜닝 적용 (DCS 반영 + reload)
+  hosts: patroni_cluster[0]            # 한 노드에서만 실행(DCS 는 클러스터 공통)
+  become: true
+  become_user: postgres
+  gather_facts: false
+  vars:
+    restart_after_apply: false          # true 면 적용 후 롤링 재시작까지 자동 수행
+  tasks:
+    - name: 적용할 파라미터 병합 (base + 프로파일 + override)
+      ansible.builtin.set_fact:
+        merged_params: >-
+          {{ postgresql_base_parameters
+             | combine(postgresql_tuning_profiles[postgresql_tuning_profile])
+             | combine(postgresql_parameters_override) }}
+
+    - name: max_connections 강제 지정값이 있으면 반영
+      ansible.builtin.set_fact:
+        merged_params: "{{ merged_params | combine({'max_connections': postgresql_max_connections}) }}"
+      when: postgresql_max_connections | string | length > 0
+
+    - name: 적용할 설정 미리보기
+      ansible.builtin.debug:
+        msg: >-
+          프로파일 '{{ postgresql_tuning_profile }}' |
+          synchronous_mode={{ patroni_synchronous_mode }}
+          (strict={{ patroni_synchronous_mode_strict }}, node_count={{ patroni_synchronous_node_count }}) |
+          parameters={{ merged_params }}
+
+    - name: 동적 설정 패치 파일 생성(임시)
+      ansible.builtin.template:
+        src: templates/dynamic-tuning.yml.j2
+        dest: /tmp/patroni-dynamic-tuning.yml
+        mode: "0600"
+
+    - name: patronictl edit-config --apply 로 DCS 에 반영
+      ansible.builtin.command: >
+        patronictl -c {{ patroni_config_dir }}/patroni.yml
+        edit-config {{ cluster_name }}
+        --apply /tmp/patroni-dynamic-tuning.yml --force
+      register: edit_out
+      changed_when: "'Not changed' not in (edit_out.stdout | default(''))"
+
+    - name: 적용 결과 출력
+      ansible.builtin.debug:
+        msg: "{{ edit_out.stdout_lines | default(['(변경 없음)']) }}"
+
+    - name: 임시 패치 파일 정리
+      ansible.builtin.file:
+        path: /tmp/patroni-dynamic-tuning.yml
+        state: absent
+
+    - name: 재시작 대기(pending restart) 상태 확인
+      ansible.builtin.command: "patronictl -c {{ patroni_config_dir }}/patroni.yml list"
+      register: cluster_list
+      changed_when: false
+
+    - name: 클러스터 상태 출력 (Pending restart 열을 확인하세요)
+      ansible.builtin.debug:
+        msg: "{{ cluster_list.stdout_lines }}"
+
+    - name: 안내 — 재시작이 필요한 파라미터 메모
+      ansible.builtin.debug:
+        msg: >-
+          shared_buffers / max_connections / wal_buffers / huge_pages /
+          max_worker_processes 등은 재시작해야 적용됩니다. 위 목록에 'Pending restart'
+          가 보이면 `ansible-playbook playbooks/restart-postgresql.yml` 를 실행하세요.
+
+# 옵션) -e restart_after_apply=true 인 경우 이어서 롤링 재시작 수행
+- name: 적용 후 자동 롤링 재시작 (옵션)
+  import_playbook: restart-postgresql.yml
+  when: restart_after_apply | default(false) | bool

@@ -1,0 +1,22 @@
+# {{ ansible_managed }}
+# Patroni 서비스 정의 (PostgreSQL 을 기동/승격/강등하는 지휘자)
+[Unit]
+Description=Patroni PostgreSQL HA orchestrator
+Documentation=https://patroni.readthedocs.io/
+After=network-online.target etcd.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=postgres
+Group=postgres
+ExecStart=/usr/local/bin/patroni {{ patroni_config_dir }}/patroni.yml
+ExecReload=/bin/kill -s HUP $MAINPID
+KillMode=process
+TimeoutSec=30
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

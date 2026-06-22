@@ -1,0 +1,116 @@
+---
+# =============================================================================
+# postgresql 역할 — PostgreSQL 서버 "바이너리"만 설치합니다.
+# 실제 데이터 클러스터 초기화(initdb)와 서비스 기동은 Patroni 가 담당하므로,
+# 여기서는 initdb 를 하지 않고 distro 기본 서비스도 꺼 둡니다.
+# =============================================================================
+
+# ----------------------------------------------------------------------------
+# Debian / Ubuntu — PGDG(PostgreSQL 공식) apt 저장소 사용
+# ----------------------------------------------------------------------------
+- name: PostgreSQL 설치 (Debian/Ubuntu)
+  when: ansible_os_family == 'Debian'
+  block:
+    - name: PGDG apt 서명 키 추가
+      ansible.builtin.get_url:
+        url: https://www.postgresql.org/media/keys/ACCC4CF8.asc
+        dest: /usr/share/keyrings/postgresql.asc
+        mode: "0644"
+
+    - name: PGDG apt 저장소 추가
+      ansible.builtin.apt_repository:
+        repo: "deb [signed-by=/usr/share/keyrings/postgresql.asc] http://apt.postgresql.org/pub/repos/apt {{ ansible_distribution_release }}-pgdg main"
+        state: present
+        filename: pgdg
+
+    - name: PostgreSQL 패키지 설치 (Debian)
+      ansible.builtin.apt:
+        name:
+          - "postgresql-{{ postgresql_version }}"
+          - "postgresql-client-{{ postgresql_version }}"
+          - "postgresql-contrib"
+        state: present
+        update_cache: true
+
+    # Debian 은 설치 시 자동으로 클러스터를 만들고 서비스를 켭니다.
+    # Patroni 가 클러스터를 직접 관리해야 하므로 기본 서비스를 끕니다.
+    - name: distro 기본 postgresql 서비스 비활성화 (Patroni 가 관리)
+      ansible.builtin.systemd:
+        name: postgresql
+        enabled: false
+        state: stopped
+      failed_when: false
+
+    - name: 자동 생성된 기본 클러스터 제거 (Patroni 가 새로 생성)
+      ansible.builtin.command: "pg_dropcluster --stop {{ postgresql_version }} main"
+      args:
+        removes: "/etc/postgresql/{{ postgresql_version }}/main"   # 있을 때만 실행(멱등성)
+
+- name: PostgreSQL bin 디렉터리 경로 지정 (Debian)
+  ansible.builtin.set_fact:
+    postgresql_bin_dir: "{{ postgresql_bin_dir_deb }}"
+  when: ansible_os_family == 'Debian'
+
+# ----------------------------------------------------------------------------
+# RHEL / Rocky — PGDG dnf 저장소 사용
+# ----------------------------------------------------------------------------
+- name: PostgreSQL 설치 (RHEL/Rocky)
+  when: ansible_os_family == 'RedHat'
+  block:
+    # 폐쇄망에서는 PGDG 인터넷 저장소 추가/모듈 비활성화를 건너뜁니다
+    # (필요한 postgresql 패키지는 로컬 번들 저장소가 제공).
+    - name: (온라인) PGDG 저장소 RPM 설치
+      ansible.builtin.dnf:
+        name: "https://download.postgresql.org/pub/repos/yum/reporpms/EL-{{ ansible_distribution_major_version }}-x86_64/pgdg-redhat-repo-latest.noarch.rpm"
+        state: present
+        disable_gpg_check: true
+      when: not (offline_mode | bool)
+
+    - name: (온라인) 내장 postgresql 모듈 비활성화 (RHEL 8/9)
+      ansible.builtin.command: dnf -qy module disable postgresql
+      register: pg_module_disable
+      changed_when: "'Disabling' in pg_module_disable.stdout"
+      when: not (offline_mode | bool)
+
+    - name: PostgreSQL 패키지 설치 (RHEL)
+      ansible.builtin.dnf:
+        name:
+          - "postgresql{{ postgresql_version }}-server"
+          - "postgresql{{ postgresql_version }}-contrib"
+        state: present
+        disablerepo: "{{ '*' if offline_mode | bool else omit }}"
+        enablerepo: "{{ offline_repo_name if offline_mode | bool else omit }}"
+
+- name: PostgreSQL bin 디렉터리 경로 지정 (RHEL)
+  ansible.builtin.set_fact:
+    postgresql_bin_dir: "{{ postgresql_bin_dir_rhel }}"
+  when: ansible_os_family == 'RedHat'
+
+# ----------------------------------------------------------------------------
+# 공통 — 사용자 / 디렉터리 준비
+# ----------------------------------------------------------------------------
+- name: 데이터 디렉터리 상위 폴더를 postgres 소유로
+  ansible.builtin.file:
+    path: "{{ postgresql_data_dir | dirname }}"
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: "0750"
+
+- name: PostgreSQL 데이터 디렉터리 생성
+  ansible.builtin.file:
+    path: "{{ postgresql_data_dir }}"
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: "0700"                  # PostgreSQL 은 데이터 디렉터리 권한을 엄격히 요구
+
+- name: postgres 사용자 PATH 에 PostgreSQL bin 추가
+  ansible.builtin.lineinfile:
+    path: /var/lib/postgresql/.bashrc
+    line: "export PATH={{ postgresql_bin_dir }}:$PATH"
+    create: true
+    owner: postgres
+    group: postgres
+    mode: "0644"
+  when: ansible_os_family == 'Debian'

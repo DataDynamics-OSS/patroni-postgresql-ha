@@ -1,0 +1,38 @@
+; {{ ansible_managed }}
+; =============================================================================
+; PgBouncer 설정 — 이 노드의 로컬 PostgreSQL 앞단 커넥션 풀러
+; =============================================================================
+[databases]
+; 로컬(127.0.0.1) PostgreSQL 로 연결합니다. 리더 판별은 상위의 HAProxy 가 담당.
+{{ app_db_name }} = host=127.0.0.1 port={{ postgresql_port }} dbname={{ app_db_name }}
+* = host=127.0.0.1 port={{ postgresql_port }}
+
+[pgbouncer]
+listen_addr = {{ pgbouncer_listen_address }}
+listen_port = {{ pgbouncer_port }}
+unix_socket_dir = /var/run/pgbouncer
+
+; 인증 방식과 사용자 목록 파일
+auth_type = scram-sha-256
+auth_file = /etc/pgbouncer/userlist.txt
+
+admin_users = {{ pgbouncer_admin_user }}
+stats_users = {{ pgbouncer_admin_user }}
+
+; 풀링 동작 설정
+pool_mode = {{ pgbouncer_pool_mode }}                  ; 트랜잭션 단위 풀링
+max_client_conn = {{ pgbouncer_max_client_conn }}      ; 최대 클라이언트 연결 수
+default_pool_size = {{ pgbouncer_default_pool_size }}   ; DB당 서버 연결 수
+reserve_pool_size = 5
+reserve_pool_timeout = 3
+
+server_reset_query = DISCARD ALL
+ignore_startup_parameters = extra_float_digits
+
+logfile = /var/log/postgresql/pgbouncer.log
+pidfile = /var/run/pgbouncer/pgbouncer.pid
+
+; 페일오버로 끊긴 서버 연결을 빨리 정리해 클라이언트가 새 리더로 재접속하도록 함
+server_login_retry = 2
+server_check_delay = 10
+tcp_keepalive = 1

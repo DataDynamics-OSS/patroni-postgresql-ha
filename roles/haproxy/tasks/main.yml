@@ -1,0 +1,91 @@
+---
+# =============================================================================
+# haproxy 역할 — HAProxy(요청 길안내) + Keepalived(VIP 관리) 배포
+# HAProxy 는 Patroni REST API 헬스체크로 "지금의 리더"를 찾아 쓰기 트래픽을 보냅니다.
+# Keepalived 는 살아있는 HAProxy 노드에 고정 주소(VIP)를 띄워 줍니다.
+# =============================================================================
+
+# ----------------------------------------------------------------------------
+# HAProxy
+# ----------------------------------------------------------------------------
+- name: HAProxy 설치 (Debian/Ubuntu)
+  ansible.builtin.apt:
+    name: haproxy
+    state: present
+    update_cache: true
+  when: ansible_os_family == 'Debian'
+
+- name: HAProxy 설치 (RHEL/Rocky)
+  ansible.builtin.dnf:
+    name: haproxy
+    state: present
+    disablerepo: "{{ '*' if offline_mode | bool else omit }}"
+    enablerepo: "{{ offline_repo_name if offline_mode | bool else omit }}"
+  when: ansible_os_family == 'RedHat'
+
+- name: haproxy.cfg 배포
+  ansible.builtin.template:
+    src: haproxy.cfg.j2
+    dest: /etc/haproxy/haproxy.cfg
+    owner: root
+    group: root
+    mode: "0644"
+    validate: "haproxy -c -f %s"    # 설정 문법이 올바를 때만 적용(안전장치)
+  notify: Restart haproxy
+
+- name: HAProxy 서비스 시작 및 부팅 시 자동 시작
+  ansible.builtin.systemd:
+    name: haproxy
+    state: started
+    enabled: true
+
+# ----------------------------------------------------------------------------
+# Keepalived (VIP)
+# ----------------------------------------------------------------------------
+- name: Keepalived 설치 (Debian/Ubuntu)
+  ansible.builtin.apt:
+    name: keepalived
+    state: present
+  when: ansible_os_family == 'Debian'
+
+- name: Keepalived 설치 (RHEL/Rocky)
+  ansible.builtin.dnf:
+    name: keepalived
+    state: present
+    disablerepo: "{{ '*' if offline_mode | bool else omit }}"
+    enablerepo: "{{ offline_repo_name if offline_mode | bool else omit }}"
+  when: ansible_os_family == 'RedHat'
+
+# HAProxy 가 아직 뜨기 전에도 VIP 를 바인딩할 수 있게 허용합니다.
+- name: VIP 의 non-local bind 허용 (sysctl)
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_nonlocal_bind
+    value: "1"
+    state: present
+    sysctl_set: true
+    reload: true
+
+# HAProxy 가 죽으면 이 스크립트가 실패 → Keepalived 가 우선순위를 낮춰 VIP 를 넘김
+- name: Keepalived 용 HAProxy 헬스체크 스크립트 배포
+  ansible.builtin.copy:
+    src: check_haproxy.sh
+    dest: /etc/keepalived/check_haproxy.sh
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart keepalived
+
+- name: keepalived.conf 배포
+  ansible.builtin.template:
+    src: keepalived.conf.j2
+    dest: /etc/keepalived/keepalived.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart keepalived
+
+- name: Keepalived 서비스 시작 및 부팅 시 자동 시작
+  ansible.builtin.systemd:
+    name: keepalived
+    state: started
+    enabled: true

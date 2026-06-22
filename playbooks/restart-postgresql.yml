@@ -1,0 +1,66 @@
+---
+# =============================================================================
+# PostgreSQL 롤링 재시작 playbook
+# -----------------------------------------------------------------------------
+# Patroni 를 통해 PostgreSQL 을 재시작합니다. 서비스 중단을 줄이기 위해
+# "복제본 먼저 → 리더 마지막" 순서(롤링)로 진행합니다.
+# shared_buffers / max_connections 처럼 재시작이 필요한 파라미터를 바꾼 뒤
+# (예: apply-tuning.yml 실행 후) 사용합니다.
+#
+# 사용법:
+#   ansible-playbook playbooks/restart-postgresql.yml                  # 전체 강제 재시작
+#   ansible-playbook playbooks/restart-postgresql.yml -e only_pending=true   # 재시작 대기 항목이 있을 때만
+# =============================================================================
+- name: PostgreSQL 롤링 재시작 (복제본 → 리더)
+  hosts: patroni_cluster[0]            # 한 노드에서 patronictl 로 전체 제어
+  become: true
+  become_user: postgres
+  gather_facts: false
+  vars:
+    only_pending: false                 # true 면 'pending restart' 표시된 노드만 재시작
+  tasks:
+    - name: 재시작 전 클러스터 상태
+      ansible.builtin.command: "patronictl -c {{ patroni_config_dir }}/patroni.yml list"
+      register: before_list
+      changed_when: false
+
+    - name: 현재 상태 출력
+      ansible.builtin.debug:
+        msg: "{{ before_list.stdout_lines }}"
+
+    # 복제본을 먼저 재시작 → 리더는 계속 쓰기를 받으므로 영향 최소화
+    - name: ① 복제본(replica) 재시작
+      ansible.builtin.command: >
+        patronictl -c {{ patroni_config_dir }}/patroni.yml
+        restart {{ cluster_name }}
+        --role replica --force
+        {{ '--pending' if (only_pending | bool) else '' }}
+      register: restart_replicas
+      changed_when: true
+
+    - name: 복제본 재시작 결과
+      ansible.builtin.debug:
+        msg: "{{ restart_replicas.stdout_lines | default([]) }}"
+
+    # 리더는 마지막에 재시작 (재시작 순간 짧은 쓰기 중단이 있을 수 있음)
+    - name: ② 리더(leader) 재시작
+      ansible.builtin.command: >
+        patronictl -c {{ patroni_config_dir }}/patroni.yml
+        restart {{ cluster_name }}
+        --role leader --force
+        {{ '--pending' if (only_pending | bool) else '' }}
+      register: restart_leader
+      changed_when: true
+
+    - name: 리더 재시작 결과
+      ansible.builtin.debug:
+        msg: "{{ restart_leader.stdout_lines | default([]) }}"
+
+    - name: 재시작 후 클러스터 상태 확인
+      ansible.builtin.command: "patronictl -c {{ patroni_config_dir }}/patroni.yml list"
+      register: after_list
+      changed_when: false
+
+    - name: 최종 상태 출력
+      ansible.builtin.debug:
+        msg: "{{ after_list.stdout_lines }}"

@@ -1,0 +1,50 @@
+# {{ ansible_managed }}
+# =============================================================================
+# HAProxy 설정 — Patroni REST API 로 "지금의 리더"를 찾아 트래픽을 길안내합니다.
+# =============================================================================
+global
+    maxconn 1000
+    log /dev/log local0
+
+defaults
+    log     global
+    mode    tcp                 # PostgreSQL 은 TCP 프로토콜로 중계
+    retries 2
+    timeout client  30m
+    timeout server  30m
+    timeout connect 4s
+    timeout check   3s
+
+# ---- 통계 화면 (웹 브라우저로 접속해 백엔드 상태를 눈으로 확인) ----
+listen stats
+    mode http
+    bind *:{{ haproxy_stats_port }}
+    stats enable
+    stats uri /
+    stats refresh 5s
+    stats show-legends
+
+{% set backend_port = pgbouncer_port if haproxy_backend_target == 'pgbouncer' else postgresql_port %}
+# ---- 쓰기(Read/Write) — 오직 "현재 리더" 한 곳으로만 보냅니다 ----
+#   Patroni 의 /primary 엔드포인트는 리더에서만 HTTP 200, 나머지는 503 을 반환합니다.
+#   따라서 200 을 주는 노드 = 현재 리더 로 자동 판별됩니다.
+listen postgres_primary
+    bind *:{{ haproxy_primary_port }}
+    option httpchk GET /primary
+    http-check expect status 200
+    default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions
+{% for h in groups['patroni_cluster'] %}
+    server {{ h }} {{ hostvars[h].node_ip }}:{{ backend_port }} check port {{ patroni_rest_port }}
+{% endfor %}
+
+# ---- 읽기(Read Only) — 건강한 복제본들로 라운드로빈 분산 ----
+#   Patroni 의 /replica 엔드포인트는 정상 동작 중인 복제본에서 HTTP 200 을 반환합니다.
+listen postgres_replicas
+    bind *:{{ haproxy_replica_port }}
+    balance roundrobin
+    option httpchk GET /replica
+    http-check expect status 200
+    default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions
+{% for h in groups['patroni_cluster'] %}
+    server {{ h }} {{ hostvars[h].node_ip }}:{{ backend_port }} check port {{ patroni_rest_port }}
+{% endfor %}

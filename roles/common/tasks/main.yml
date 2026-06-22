@@ -1,0 +1,71 @@
+---
+# =============================================================================
+# common 역할 — 모든 노드에 공통으로 필요한 기본 설정
+# (패키지 설치, 시간 동기화, 호스트 이름 등록, 커널 파라미터 조정)
+# =============================================================================
+
+- name: OS 패키지 계열 판별(Debian/RedHat)
+  ansible.builtin.set_fact:
+    is_debian: "{{ ansible_os_family == 'Debian' }}"
+    is_redhat: "{{ ansible_os_family == 'RedHat' }}"
+
+- name: 시간대를 UTC 로 설정
+  community.general.timezone:
+    name: UTC
+
+- name: 기본 패키지 설치 (Debian/Ubuntu)
+  ansible.builtin.apt:
+    name:
+      - python3-pip
+      - python3-psycopg2     # Ansible 의 PostgreSQL 모듈이 사용
+      - acl                  # become_user 전환 시 파일 권한 처리에 필요
+      - curl
+      - gnupg
+      - ca-certificates
+      - chrony               # 시간 동기화(클러스터에 매우 중요)
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  when: is_debian
+
+- name: 기본 패키지 설치 (RHEL/Rocky)
+  ansible.builtin.dnf:
+    name:
+      - python3-pip
+      - python3-psycopg2
+      - acl
+      - chrony
+    state: present
+    # 폐쇄망: 시스템 저장소를 모두 끄고 로컬 번들 저장소만 사용
+    disablerepo: "{{ '*' if offline_mode | bool else omit }}"
+    enablerepo: "{{ offline_repo_name if offline_mode | bool else omit }}"
+  when: is_redhat
+
+# 노드 간 시간이 어긋나면 복제·리더 선출에 문제가 생기므로 시간 동기화는 필수입니다.
+- name: 시간 동기화(chrony) 실행 및 부팅 시 자동 시작
+  ansible.builtin.service:
+    name: "{{ 'chrony' if is_debian else 'chronyd' }}"
+    state: started
+    enabled: true
+
+# 노드들이 호스트 이름으로 서로를 찾을 수 있도록 /etc/hosts 에 등록합니다.
+- name: /etc/hosts 에 클러스터 구성원 등록 (etcd + db 모두)
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: "\\s{{ item }}$"
+    line: "{{ hostvars[item].node_ip }} {{ item }}"
+    state: present
+  loop: "{{ (groups['etcd'] + groups['patroni_cluster']) | unique }}"
+
+# PostgreSQL 운영에 권장되는 커널 파라미터를 적용합니다.
+- name: PostgreSQL 권장 커널 파라미터 적용 (sysctl)
+  ansible.posix.sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    state: present
+    sysctl_set: true
+    reload: true
+  loop:
+    - { name: "vm.overcommit_memory", value: "2" }     # 메모리 과다 할당 방지
+    - { name: "vm.swappiness", value: "1" }            # 스왑 사용 최소화
+    - { name: "net.ipv4.tcp_keepalive_time", value: "300" }   # 죽은 연결 빠른 정리

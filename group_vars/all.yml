@@ -1,0 +1,227 @@
+---
+# =============================================================================
+# 클러스터 전역 설정
+# -----------------------------------------------------------------------------
+# 이 파일의 값들은 모든 노드에 공통으로 적용됩니다. 내 환경에 맞게 수정하세요.
+# 특히 cluster_vip, vip_interface, 그리고 비밀번호는 반드시 확인해야 합니다.
+# =============================================================================
+
+# --- 클러스터 식별자 --------------------------------------------------------
+cluster_name: pg-ha-cluster          # Patroni scope 이름(같은 etcd 안에서 고유해야 함)
+
+# --- 가상 IP(VIP, Keepalived 가 관리) ---------------------------------------
+# 애플리케이션은 이 VIP 로만 접속합니다. VIP 를 가진 노드의 HAProxy 가 트래픽을 라우팅.
+cluster_vip: 10.0.0.10               # 아직 아무도 쓰지 않는 여유 IP 를 지정
+vip_interface: eth0                  # VIP 를 붙일 네트워크 카드 이름( `ip a` 로 확인 )
+
+# --- 폐쇄망(air-gap) 오프라인 설치 ------------------------------------------
+# true 면 인터넷 의존 작업(PGDG 저장소 추가, etcd 다운로드, pip 인터넷 설치)을
+# 건너뛰고, scripts/airgap-install.sh 가 각 노드에 배치해 둔 로컬 자원을 사용합니다.
+#   - 로컬 dnf 저장소: offline_repo_name (file://{{ offline_base_dir }}/rpms)
+#   - pip wheelhouse : offline_wheelhouse
+#   - etcd 바이너리  : offline_etcd_tarball
+# (RHEL 9 / Python 3.9 기준. scripts/README 또는 14장 참고)
+offline_mode: false
+offline_repo_name: patroni-airgap
+offline_base_dir: /opt/patroni-airgap
+offline_wheelhouse: "{{ offline_base_dir }}/wheels"
+offline_etcd_tarball: "{{ offline_base_dir }}/etcd/etcd-v{{ etcd_version }}-linux-amd64.tar.gz"
+
+# --- PostgreSQL -------------------------------------------------------------
+postgresql_version: "16"             # 14/15/17 등으로 변경 가능
+postgresql_port: 5432
+postgresql_data_dir: "/var/lib/postgresql/{{ postgresql_version }}/data"
+postgresql_bin_dir_deb: "/usr/lib/postgresql/{{ postgresql_version }}/bin"   # Debian 계열 경로
+postgresql_bin_dir_rhel: "/usr/pgsql-{{ postgresql_version }}/bin"           # RHEL 계열 경로
+postgresql_listen_address: "0.0.0.0"
+
+# 자격 증명 — 운영 환경에서는 반드시 Vault 로 암호화한 값으로 교체할 것!
+postgres_superuser: postgres
+postgres_superuser_password: "ChangeMe_Super_2026!"
+postgres_replication_user: replicator                 # 복제 전용 계정
+postgres_replication_password: "ChangeMe_Repl_2026!"
+patroni_rewind_user: rewind                           # pg_rewind(구 리더 재동기화)용 계정
+patroni_rewind_password: "ChangeMe_Rewind_2026!"
+
+# 클러스터에 생성할 애플리케이션 DB / 사용자 (사용자가 해당 DB 의 owner 로 등록됨)
+app_db_name: appdb
+app_db_user: appuser
+app_db_password: "ChangeMe_App_2026!"
+
+# --- PostgreSQL 접근 허용 IP (pg_hba.conf) ----------------------------------
+# 여기 적은 대역만 PostgreSQL 에 접속할 수 있습니다. 이 값을 바꾼 뒤
+# `ansible-playbook site.yml --tags patroni` 를 다시 실행하면, Patroni 가
+# pg_hba.conf 를 다시 쓰고 reload 하여 "재시작 없이 런타임에" 적용합니다.
+# (DB 노드끼리의 복제 접속은 자동으로 허용되므로 따로 적지 않아도 됩니다.)
+postgresql_auth_method: scram-sha-256
+postgresql_allowed_cidrs:
+  - 127.0.0.1/32
+  - 10.0.0.0/8           # 운영에서는 실제 애플리케이션 IP 대역으로 좁히세요
+  # - 192.168.0.0/16
+  # - 203.0.113.25/32
+
+# --- PostgreSQL 튜닝 프로파일 ------------------------------------------------
+# 블로그 "클러스터 규모별 PostgreSQL 튜닝" 가이드를 기반으로 한 규모별 세트입니다.
+# 규모는 "DB 서버 RAM" 으로 판단합니다.
+#   minimal : 테스트/실습용(<=4GB RAM). 기본값 — 작은 VM 에서도 안전하게 기동
+#   small   : 16GB RAM   medium : 32GB RAM   large : 64GB RAM   xl : 128GB RAM
+postgresql_tuning_profile: minimal
+
+# max_connections 를 프로파일 값과 다르게 강제하고 싶을 때만 숫자를 넣으세요.
+# 비워두면("") 선택한 프로파일의 max_connections 가 사용됩니다.
+postgresql_max_connections: ""
+
+# 위 프로파일/기본값 위에 덧씌울 사용자 정의 파라미터 (가장 높은 우선순위)
+postgresql_parameters_override: {}
+#   예) shared_buffers 만 직접 지정:
+#   postgresql_parameters_override:
+#     shared_buffers: "6GB"
+
+# 규모와 무관하게 항상 적용되는 공통 파라미터 (복제/보안/로깅 등)
+postgresql_base_parameters:
+  wal_level: replica
+  hot_standby: "on"
+  max_wal_senders: 10
+  max_replication_slots: 10
+  wal_keep_size: "1GB"
+  wal_log_hints: "on"                 # pg_rewind 사용에 필수
+  wal_compression: "on"
+  checkpoint_completion_target: 0.9
+  checkpoint_timeout: "15min"
+  random_page_cost: 1.1               # SSD 기준(HDD 면 4.0)
+  effective_io_concurrency: 200       # SSD 기준
+  password_encryption: "scram-sha-256"
+  jit: "off"                          # 메타스토어형 워크로드 권장
+  log_min_duration_statement: 1000    # 1초 넘는 느린 쿼리 기록
+  log_checkpoints: "on"
+  log_lock_waits: "on"
+  log_autovacuum_min_duration: 0
+  log_temp_files: 0
+  log_line_prefix: "%m [%p] %u@%d "
+
+# 규모별 파라미터 (RAM 기준). 선택한 프로파일 한 벌이 base 위에 병합됩니다.
+postgresql_tuning_profiles:
+  minimal:                            # 테스트/실습용 (<=4GB RAM)
+    shared_buffers: "512MB"
+    effective_cache_size: "1536MB"
+    work_mem: "8MB"
+    maintenance_work_mem: "128MB"
+    max_connections: 200
+    wal_buffers: "16MB"
+    min_wal_size: "256MB"
+    max_wal_size: "1GB"
+    max_worker_processes: 8
+    max_parallel_workers: 4
+    max_parallel_workers_per_gather: 2
+    autovacuum_max_workers: 3
+    autovacuum_vacuum_cost_limit: 1000
+    autovacuum_naptime: "30s"
+  small:                              # 16GB RAM
+    shared_buffers: "4GB"
+    effective_cache_size: "12GB"
+    work_mem: "16MB"
+    maintenance_work_mem: "512MB"
+    max_connections: 200
+    wal_buffers: "16MB"
+    min_wal_size: "1GB"
+    max_wal_size: "4GB"
+    max_worker_processes: 8
+    max_parallel_workers: 4
+    max_parallel_workers_per_gather: 2
+    autovacuum_max_workers: 3
+    autovacuum_vacuum_cost_limit: 1000
+    autovacuum_naptime: "30s"
+  medium:                             # 32GB RAM
+    shared_buffers: "8GB"
+    effective_cache_size: "24GB"
+    work_mem: "24MB"
+    maintenance_work_mem: "1GB"
+    max_connections: 400
+    wal_buffers: "16MB"
+    min_wal_size: "2GB"
+    max_wal_size: "8GB"
+    max_worker_processes: 16
+    max_parallel_workers: 8
+    max_parallel_workers_per_gather: 4
+    autovacuum_max_workers: 4
+    autovacuum_vacuum_cost_limit: 2000
+    autovacuum_naptime: "20s"
+  large:                              # 64GB RAM (PgBouncer 권장)
+    shared_buffers: "16GB"
+    effective_cache_size: "48GB"
+    work_mem: "32MB"
+    maintenance_work_mem: "2GB"
+    max_connections: 600
+    wal_buffers: "16MB"
+    min_wal_size: "4GB"
+    max_wal_size: "16GB"
+    max_worker_processes: 32
+    max_parallel_workers: 16
+    max_parallel_workers_per_gather: 4
+    autovacuum_max_workers: 6
+    autovacuum_vacuum_cost_limit: 3000
+    autovacuum_naptime: "15s"
+    huge_pages: "try"
+  xl:                                 # 128GB RAM (PgBouncer 필수)
+    shared_buffers: "32GB"
+    effective_cache_size: "96GB"
+    work_mem: "48MB"
+    maintenance_work_mem: "2GB"
+    max_connections: 800
+    wal_buffers: "16MB"
+    min_wal_size: "8GB"
+    max_wal_size: "32GB"
+    max_worker_processes: 48
+    max_parallel_workers: 24
+    max_parallel_workers_per_gather: 6
+    autovacuum_max_workers: 6
+    autovacuum_vacuum_cost_limit: 4000
+    autovacuum_naptime: "10s"
+    huge_pages: "try"
+
+# --- etcd -------------------------------------------------------------------
+etcd_version: "3.5.16"
+etcd_client_port: 2379               # 클라이언트(Patroni)가 접속하는 포트
+etcd_peer_port: 2380                 # etcd 멤버끼리 통신하는 포트
+etcd_data_dir: /var/lib/etcd
+etcd_install_dir: /usr/local/bin
+etcd_token: "{{ cluster_name }}-etcd"   # 클러스터 초기화 토큰
+
+# --- Patroni ----------------------------------------------------------------
+patroni_rest_port: 8008              # HAProxy 가 헬스체크하는 REST API 포트
+patroni_config_dir: /etc/patroni
+patroni_log_dir: /var/log/patroni
+patroni_ttl: 30                      # 리더 키 수명(초). 이 시간 안에 갱신 못 하면 리더 교체
+patroni_loop_wait: 10                # Patroni 주기적 점검 간격(초)
+patroni_retry_timeout: 10            # DCS/PostgreSQL 작업 재시도 타임아웃(초)
+patroni_maximum_lag_on_failover: 1048576   # 페일오버 허용 최대 복제 지연(1MB)
+
+# --- 동기 복제(synchronous replication) ------------------------------------
+# false : 비동기 복제(기본). 리더가 standby 응답을 기다리지 않아 빠르지만,
+#         리더 장애 시 아직 복제 안 된 일부 트랜잭션이 유실될 수 있습니다.
+# true  : 동기 복제. 커밋이 동기 standby 에 반영될 때까지 리더가 기다립니다.
+#         → "데이터 무손실" 우선. 대신 쓰기 지연이 늘고, 동기 standby 가 느리면
+#           리더 쓰기도 함께 느려집니다. (Patroni 가 synchronous_standby_names 자동 관리)
+patroni_synchronous_mode: false
+# true 면 동기 standby 가 하나도 없을 때 쓰기를 "거부"하여 무손실을 절대 보장합니다.
+# (가용성↓ 일관성↑). false 면 standby 가 없을 때 비동기로 자동 강등되어 쓰기는 계속됩니다.
+patroni_synchronous_mode_strict: false
+# 동기적으로 확인받을 standby 개수 (synchronous_mode=true 일 때만 의미 있음).
+# 예) 3노드에서 2 로 두면 리더 + 2 복제본 중 2곳에 반영돼야 커밋 확정 → 더 강한 보장.
+patroni_synchronous_node_count: 1
+
+# --- PgBouncer --------------------------------------------------------------
+pgbouncer_port: 6432
+pgbouncer_listen_address: "0.0.0.0"
+pgbouncer_pool_mode: transaction     # 트랜잭션 단위 풀링(가장 보편적)
+pgbouncer_max_client_conn: 1000      # 받아들일 최대 클라이언트 연결 수
+pgbouncer_default_pool_size: 25      # DB당 유지할 서버 연결 수
+pgbouncer_admin_user: pgbouncer_admin
+pgbouncer_admin_password: "ChangeMe_PgB_2026!"
+
+# --- HAProxy ----------------------------------------------------------------
+haproxy_stats_port: 7000             # 통계 화면 포트(웹 브라우저로 접속)
+haproxy_primary_port: 5000           # 쓰기(RW) — 항상 현재 리더로 라우팅
+haproxy_replica_port: 5001           # 읽기(RO) — 건강한 복제본으로 라운드로빈
+# HAProxy 가 보낼 백엔드 대상: PgBouncer(권장) 또는 PostgreSQL 직접
+haproxy_backend_target: pgbouncer    # "pgbouncer" 또는 "postgresql"

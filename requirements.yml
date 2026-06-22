@@ -1,0 +1,10 @@
+---
+# 필요한 Ansible 컬렉션 목록
+# 설치: ansible-galaxy collection install -r requirements.yml
+collections:
+  - name: community.general        # timezone, etcd 관련 등 범용 모듈
+    version: ">=8.0.0"
+  - name: community.postgresql     # postgresql_db / postgresql_user 모듈
+    version: ">=3.0.0"
+  - name: ansible.posix            # sysctl 모듈
+    version: ">=1.5.0"

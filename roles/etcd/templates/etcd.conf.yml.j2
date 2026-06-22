@@ -1,0 +1,23 @@
+# {{ ansible_managed }}
+# =============================================================================
+# {{ inventory_hostname }} 노드의 etcd 설정
+# =============================================================================
+name: "{{ inventory_hostname }}"
+data-dir: "{{ etcd_data_dir }}"
+
+# 멤버끼리(peer) 통신할 주소
+listen-peer-urls: "http://{{ node_ip }}:{{ etcd_peer_port }}"
+# 클라이언트(Patroni)가 접속할 주소 (로컬 루프백도 함께 허용)
+listen-client-urls: "http://{{ node_ip }}:{{ etcd_client_port }},http://127.0.0.1:{{ etcd_client_port }}"
+
+# 다른 노드에 광고할 주소
+initial-advertise-peer-urls: "http://{{ node_ip }}:{{ etcd_peer_port }}"
+advertise-client-urls: "http://{{ node_ip }}:{{ etcd_client_port }}"
+
+# 최초 클러스터 구성 정보 (모든 etcd 멤버를 나열)
+initial-cluster-token: "{{ etcd_token }}"
+initial-cluster-state: "new"
+initial-cluster: "{% for h in groups['etcd'] %}{{ h }}=http://{{ hostvars[h].node_ip }}:{{ etcd_peer_port }}{% if not loop.last %},{% endif %}{% endfor %}"
+
+enable-v2: false                 # 구버전 v2 API 비활성화(Patroni 는 v3 사용)
+auto-compaction-retention: "1"   # 1시간 단위로 오래된 리비전 정리

@@ -1,0 +1,13 @@
+---
+- name: Reload patroni
+  ansible.builtin.systemd:
+    name: patroni
+    state: reloaded
+  # reload 는 로컬 patroni.yml(REST/etcd/접속 설정)만 다시 읽습니다.
+  # 클러스터 공통(DCS) 파라미터는 `patronictl edit-config` 로 바꿔야 합니다.
+
+- name: Restart patroni
+  ansible.builtin.systemd:
+    name: patroni
+    state: restarted
+    daemon_reload: true

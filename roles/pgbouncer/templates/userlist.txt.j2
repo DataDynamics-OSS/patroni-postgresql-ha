@@ -1,0 +1,8 @@
+; {{ ansible_managed }}
+; PgBouncer 인증 사용자 목록.
+; auth_type=scram-sha-256 환경에서는 여기에 평문 비밀번호를 적어도 됩니다
+; (PgBouncer 가 클라이언트와 SCRAM 교환을 대신 수행).
+; 운영에서는 auth_query(PostgreSQL 조회) 또는 미리 해시한 SCRAM 검증자 사용을 권장합니다.
+"{{ app_db_user }}" "{{ app_db_password }}"
+"{{ postgres_superuser }}" "{{ postgres_superuser_password }}"
+"{{ pgbouncer_admin_user }}" "{{ pgbouncer_admin_password }}"

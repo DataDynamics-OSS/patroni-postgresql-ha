@@ -1,0 +1,11 @@
+---
+# 설정 파일이 변경되면 호출되어 각 서비스를 재시작합니다.
+- name: Restart haproxy
+  ansible.builtin.systemd:
+    name: haproxy
+    state: restarted
+
+- name: Restart keepalived
+  ansible.builtin.systemd:
+    name: keepalived
+    state: restarted

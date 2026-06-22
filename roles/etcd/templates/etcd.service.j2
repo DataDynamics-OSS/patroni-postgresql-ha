@@ -1,0 +1,19 @@
+# {{ ansible_managed }}
+# etcd 서비스 정의 (Patroni 의 공동 장부/DCS)
+[Unit]
+Description=etcd key-value store (Patroni DCS)
+Documentation=https://github.com/etcd-io/etcd
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=etcd
+Group=etcd
+ExecStart={{ etcd_install_dir }}/etcd --config-file /etc/etcd.conf.yml
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

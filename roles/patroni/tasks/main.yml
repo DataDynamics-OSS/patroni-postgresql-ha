@@ -1,0 +1,141 @@
+---
+# =============================================================================
+# patroni 역할 — Patroni 설치 및 HA PostgreSQL 클러스터 부트스트랩
+# Patroni 가 PostgreSQL 을 직접 기동/승격/강등하고, etcd 에 리더 정보를 기록합니다.
+# =============================================================================
+
+- name: pip 로 Patroni + etcd 클라이언트 설치
+  ansible.builtin.pip:
+    name:
+      - "patroni[etcd3]"     # etcd v3 API 지원 포함
+      - psycopg2-binary
+      - python-etcd
+    state: present
+    # 폐쇄망: 인터넷 대신 로컬 wheelhouse 에서 설치(--no-index --find-links).
+    # Debian 온라인: 시스템 파이썬 보호 정책 때문에 --break-system-packages 필요.
+    extra_args: >-
+      {{ ('--no-index --find-links ' ~ offline_wheelhouse) if offline_mode | bool
+         else ('--break-system-packages' if ansible_os_family == 'Debian' else omit) }}
+
+# postgresql 역할에서 set_fact 한 값은 다른 플레이에서 사라질 수 있어 다시 계산합니다.
+- name: PostgreSQL bin 디렉터리 경로 재설정(멱등)
+  ansible.builtin.set_fact:
+    postgresql_bin_dir: "{{ postgresql_bin_dir_deb if ansible_os_family == 'Debian' else postgresql_bin_dir_rhel }}"
+
+- name: Patroni 설정 디렉터리 생성
+  ansible.builtin.file:
+    path: "{{ patroni_config_dir }}"
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: "0750"
+
+- name: Patroni 로그 디렉터리 생성
+  ansible.builtin.file:
+    path: "{{ patroni_log_dir }}"
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: "0750"
+
+- name: Patroni 설정 파일 배포
+  ansible.builtin.template:
+    src: patroni.yml.j2
+    dest: "{{ patroni_config_dir }}/patroni.yml"
+    owner: postgres
+    group: postgres
+    mode: "0600"             # 비밀번호가 들어가므로 권한을 엄격히
+  notify: Reload patroni
+
+- name: Patroni systemd 유닛 배포
+  ansible.builtin.template:
+    src: patroni.service.j2
+    dest: /etc/systemd/system/patroni.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart patroni
+
+- name: Patroni 서비스 시작 및 부팅 시 자동 시작
+  ansible.builtin.systemd:
+    name: patroni
+    state: started
+    enabled: true
+    daemon_reload: true
+
+# Patroni 가 떠서 REST API 가 응답할 때까지 기다립니다(200=정상, 503=아직 준비중).
+- name: Patroni REST API 응답 대기
+  ansible.builtin.uri:
+    url: "http://{{ node_ip }}:{{ patroni_rest_port }}/health"
+    status_code: [200, 503]
+  register: patroni_health
+  retries: 30
+  delay: 5
+  until: patroni_health.status is defined
+
+# 클러스터 전체에서 리더가 한 명 선출될 때까지 기다립니다(한 번만 확인).
+- name: 클러스터 리더 선출 대기
+  ansible.builtin.uri:
+    url: "http://{{ node_ip }}:{{ patroni_rest_port }}/leader"
+    status_code: [200, 503]
+  register: leader_check
+  retries: 30
+  delay: 5
+  until: leader_check.status == 200
+  run_once: true
+
+# ----------------------------------------------------------------------------
+# 현재 노드가 리더인지 판별
+#   Patroni REST 의 /primary 는 리더에서만 200 을 반환합니다.
+# ----------------------------------------------------------------------------
+- name: 이 노드의 Patroni 역할 조회
+  ansible.builtin.uri:
+    url: "http://{{ node_ip }}:{{ patroni_rest_port }}/primary"
+    status_code: [200, 503]
+  register: primary_check
+
+- name: 이 노드가 리더인지 표시
+  ansible.builtin.set_fact:
+    patroni_is_leader: "{{ primary_check.status == 200 }}"
+
+# ----------------------------------------------------------------------------
+# 애플리케이션 사용자 / DB 생성 — 리더 노드에서만 1회 실행
+#   각 노드가 patroni_is_leader 를 평가하므로, 리더가 아닌 노드는 건너뜁니다.
+#   리더는 자기 자신의 PostgreSQL(127.0.0.1)에 접속해 작업합니다.
+#   순서가 중요합니다: ① 사용자 먼저 만들고 → ② 그 사용자를 owner 로 DB 생성.
+# ----------------------------------------------------------------------------
+- name: 리더에서 애플리케이션 사용자/DB 생성
+  when: patroni_is_leader | default(false)
+  block:
+    - name: ① 애플리케이션 사용자(role) 생성
+      community.postgresql.postgresql_user:
+        name: "{{ app_db_user }}"
+        password: "{{ app_db_password }}"
+        login_user: "{{ postgres_superuser }}"
+        login_password: "{{ postgres_superuser_password }}"
+        login_host: 127.0.0.1
+        port: "{{ postgresql_port }}"
+        state: present
+
+    - name: ② 애플리케이션 데이터베이스 생성 (owner = 위 사용자)
+      community.postgresql.postgresql_db:
+        name: "{{ app_db_name }}"
+        owner: "{{ app_db_user }}"          # 생성한 사용자를 DB 소유자로 등록
+        encoding: UTF8
+        login_user: "{{ postgres_superuser }}"
+        login_password: "{{ postgres_superuser_password }}"
+        login_host: 127.0.0.1
+        port: "{{ postgresql_port }}"
+        state: present
+
+    - name: ③ 소유자에게 DB 전체 권한 보장
+      community.postgresql.postgresql_privs:
+        type: database
+        database: "{{ app_db_name }}"
+        roles: "{{ app_db_user }}"
+        privs: ALL
+        login_user: "{{ postgres_superuser }}"
+        login_password: "{{ postgres_superuser_password }}"
+        login_host: 127.0.0.1
+        port: "{{ postgresql_port }}"
+        state: present

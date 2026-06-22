@@ -1,0 +1,99 @@
+---
+# =============================================================================
+# etcd 역할 — Patroni 가 사용할 "공동 장부"(DCS) 3노드 클러스터 구성
+# etcd 는 누가 리더인지 같은 합의 정보를 모든 노드가 함께 보는 저장소입니다.
+# =============================================================================
+
+- name: etcd 시스템 그룹 생성
+  ansible.builtin.group:
+    name: etcd
+    system: true
+
+- name: etcd 시스템 사용자 생성
+  ansible.builtin.user:
+    name: etcd
+    group: etcd
+    system: true
+    shell: /usr/sbin/nologin       # 로그인 불가(서비스 전용 계정)
+    home: "{{ etcd_data_dir }}"
+    create_home: false
+
+- name: etcd 데이터 디렉터리 생성
+  ansible.builtin.file:
+    path: "{{ etcd_data_dir }}"
+    state: directory
+    owner: etcd
+    group: etcd
+    mode: "0700"
+
+# 이미 원하는 버전이 깔려 있으면 재다운로드를 건너뛰기 위한 확인
+- name: etcd 바이너리 설치 여부/버전 확인
+  ansible.builtin.command: "{{ etcd_install_dir }}/etcd --version"
+  register: etcd_installed
+  changed_when: false
+  failed_when: false
+
+- name: etcd 릴리스 다운로드 및 설치
+  when: etcd_version not in (etcd_installed.stdout | default(''))
+  block:
+    - name: (온라인) etcd 압축 파일 다운로드
+      ansible.builtin.get_url:
+        url: "https://github.com/etcd-io/etcd/releases/download/v{{ etcd_version }}/etcd-v{{ etcd_version }}-linux-amd64.tar.gz"
+        dest: "/tmp/etcd-v{{ etcd_version }}.tar.gz"
+        mode: "0644"
+      when: not (offline_mode | bool)
+
+    # 폐쇄망에서는 airgap-install.sh 가 미리 배치한 로컬 tarball 을 사용
+    - name: etcd 압축 파일 경로 결정
+      ansible.builtin.set_fact:
+        _etcd_tarball: "{{ offline_etcd_tarball if offline_mode | bool else '/tmp/etcd-v' ~ etcd_version ~ '.tar.gz' }}"
+
+    - name: etcd 압축 해제
+      ansible.builtin.unarchive:
+        src: "{{ _etcd_tarball }}"
+        dest: /tmp
+        remote_src: true           # 이미 원격 노드에 있는 파일을 푼다는 의미
+
+    - name: etcd / etcdctl 바이너리 설치
+      ansible.builtin.copy:
+        src: "/tmp/etcd-v{{ etcd_version }}-linux-amd64/{{ item }}"
+        dest: "{{ etcd_install_dir }}/{{ item }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0755"
+      loop:
+        - etcd
+        - etcdctl
+
+- name: etcd 설정 파일 배포
+  ansible.builtin.template:
+    src: etcd.conf.yml.j2
+    dest: /etc/etcd.conf.yml
+    owner: etcd
+    group: etcd
+    mode: "0640"
+  notify: Restart etcd          # 설정이 바뀌면 핸들러가 재시작
+
+- name: etcd systemd 유닛 배포
+  ansible.builtin.template:
+    src: etcd.service.j2
+    dest: /etc/systemd/system/etcd.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart etcd
+
+- name: etcd 서비스 시작 및 부팅 시 자동 시작
+  ansible.builtin.systemd:
+    name: etcd
+    state: started
+    enabled: true
+    daemon_reload: true
+
+# 다음 노드로 넘어가기 전에 이 노드의 etcd 가 실제로 떴는지 확인합니다.
+- name: etcd 클라이언트 포트가 열릴 때까지 대기
+  ansible.builtin.wait_for:
+    host: "{{ node_ip }}"
+    port: "{{ etcd_client_port }}"
+    timeout: 60

@@ -1,0 +1,111 @@
+# {{ ansible_managed }}
+# =============================================================================
+# {{ inventory_hostname }} 노드의 Patroni 설정 파일
+# scope(=클러스터 이름)가 같은 노드들이 하나의 클러스터로 묶입니다.
+# =============================================================================
+scope: {{ cluster_name }}
+namespace: /service/
+name: {{ patroni_name }}
+
+# --- 로그 설정 ---
+log:
+  level: INFO
+  dir: {{ patroni_log_dir }}
+  file_num: 10
+  file_size: 25000000
+
+# --- REST API (HAProxy 헬스체크 및 patronictl 이 사용) ---
+restapi:
+  listen: {{ node_ip }}:{{ patroni_rest_port }}
+  connect_address: {{ node_ip }}:{{ patroni_rest_port }}
+
+# --- etcd 접속 정보 (모든 etcd 멤버를 나열) ---
+etcd3:
+  hosts:
+{% for h in groups['etcd'] %}
+    - {{ hostvars[h].node_ip }}:{{ etcd_client_port }}
+{% endfor %}
+
+{# -- 최종 PostgreSQL 파라미터 계산: 공통 base + 선택 프로파일 + 사용자 override -- #}
+{%- set _merged = postgresql_base_parameters | combine(postgresql_tuning_profiles[postgresql_tuning_profile]) | combine(postgresql_parameters_override) -%}
+{%- if postgresql_max_connections is defined and (postgresql_max_connections | string | length > 0) -%}
+{%-   set _ = _merged.update({'max_connections': postgresql_max_connections}) -%}
+{%- endif -%}
+{#- -- pg_hba.conf 라인 동적 생성: 루프백 + 허용 CIDR + 노드 간 복제 -- -#}
+{%- set _hba = [] -%}
+{%- set _ = _hba.append('local all all ' ~ postgresql_auth_method) -%}
+{%- for cidr in postgresql_allowed_cidrs -%}
+{%-   set _ = _hba.append('host all all ' ~ cidr ~ ' ' ~ postgresql_auth_method) -%}
+{%- endfor -%}
+{%- for h in groups['patroni_cluster'] -%}
+{%-   set _ = _hba.append('host replication ' ~ postgres_replication_user ~ ' ' ~ hostvars[h].node_ip ~ '/32 ' ~ postgresql_auth_method) -%}
+{%- endfor -%}
+
+# -----------------------------------------------------------------------------
+# bootstrap: 클러스터 "최초 초기화" 시점에만 DCS(etcd)에 한 번 기록됩니다.
+# 이미 떠 있는 클러스터의 파라미터를 바꾸려면 이 파일이 아니라
+# `ansible-playbook playbooks/apply-tuning.yml` (= patronictl edit-config) 로 적용하세요.
+# -----------------------------------------------------------------------------
+bootstrap:
+  dcs:
+    ttl: {{ patroni_ttl }}                          # 리더 키 수명(초)
+    loop_wait: {{ patroni_loop_wait }}              # 점검 주기(초)
+    retry_timeout: {{ patroni_retry_timeout }}      # 재시도 타임아웃(초)
+    maximum_lag_on_failover: {{ patroni_maximum_lag_on_failover }}   # 페일오버 허용 지연
+    synchronous_mode: {{ patroni_synchronous_mode | bool | to_json }}              # 동기 복제 사용 여부
+    synchronous_mode_strict: {{ patroni_synchronous_mode_strict | bool | to_json }}   # 무손실 절대 보장 여부
+    synchronous_node_count: {{ patroni_synchronous_node_count | int }}     # 동기 standby 개수
+    postgresql:
+      use_pg_rewind: true                           # 구 리더를 빠르게 재동기화
+      use_slots: true                               # 복제 슬롯 사용(WAL 보존)
+      parameters:
+{% for key, value in _merged.items() %}
+        {{ key }}: {{ value | to_json }}
+{% endfor %}
+
+  initdb:
+    - encoding: UTF8
+    - data-checksums                                # 데이터 손상 감지용 체크섬
+
+  # 최초 초기화 시 리더의 pg_hba.conf 에 기록될 접속 허용 규칙
+  pg_hba:
+{% for line in _hba %}
+    - {{ line }}
+{% endfor %}
+
+# --- 이 노드의 PostgreSQL 동작 설정 ---
+postgresql:
+  listen: {{ postgresql_listen_address }}:{{ postgresql_port }}
+  connect_address: {{ node_ip }}:{{ postgresql_port }}
+  data_dir: {{ postgresql_data_dir }}
+  bin_dir: {{ postgresql_bin_dir }}
+  pgpass: /tmp/pgpass0
+
+  # 런타임 pg_hba 관리: 이 값이 있으면 Patroni 가 pg_hba.conf 를 직접 작성하고,
+  # reload 시 변경분을 "재시작 없이" 반영합니다. (allowed_cidrs 변경 → --tags patroni 재실행)
+  pg_hba:
+{% for line in _hba %}
+    - {{ line }}
+{% endfor %}
+
+  # Patroni 가 사용하는 내부 계정들(슈퍼유저/복제/rewind)
+  authentication:
+    superuser:
+      username: {{ postgres_superuser }}
+      password: "{{ postgres_superuser_password }}"
+    replication:
+      username: {{ postgres_replication_user }}
+      password: "{{ postgres_replication_password }}"
+    rewind:
+      username: {{ patroni_rewind_user }}
+      password: "{{ patroni_rewind_password }}"
+
+  parameters:
+    unix_socket_directories: "/var/run/postgresql, /tmp"
+
+# --- 노드 태그(역할 제어) ---
+tags:
+  nofailover: false       # true 면 이 노드는 리더가 되지 않음
+  noloadbalance: false    # true 면 읽기 분산 대상에서 제외
+  clonefrom: false        # 새 복제본 생성 시 이 노드를 우선 복제원으로
+  nosync: false           # true 면 동기 standby 후보에서 제외

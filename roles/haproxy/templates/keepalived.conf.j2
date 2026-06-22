@@ -1,0 +1,40 @@
+# {{ ansible_managed }}
+# =============================================================================
+# Keepalived 설정 — VIP(고정 접속 주소)를 살아있는 HAProxy 노드에 띄웁니다.
+# priority 가 가장 높은 노드가 평소 VIP 를 보유(MASTER)하고, 장애 시 다음 노드로 이동.
+# =============================================================================
+global_defs {
+    router_id {{ inventory_hostname }}
+    enable_script_security
+    script_user root
+}
+
+# HAProxy 가 살아있는지 2초마다 점검. 죽으면 priority 를 낮춰 VIP 를 넘깁니다.
+vrrp_script chk_haproxy {
+    script "/etc/keepalived/check_haproxy.sh"
+    interval 2
+    weight 2
+    fall 2
+    rise 2
+}
+
+vrrp_instance VI_PG {
+    state {{ keepalived_state }}            # MASTER 또는 BACKUP
+    interface {{ vip_interface }}           # VIP 를 붙일 네트워크 카드
+    virtual_router_id 51                    # 같은 클러스터 노드는 동일 값이어야 함
+    priority {{ keepalived_priority }}      # 높을수록 우선해서 VIP 보유
+    advert_int 1
+
+    authentication {
+        auth_type PASS
+        auth_pass {{ cluster_name[:8] }}    # 노드 간 VRRP 인증용(8자 이내)
+    }
+
+    virtual_ipaddress {
+        {{ cluster_vip }}/24 dev {{ vip_interface }}
+    }
+
+    track_script {
+        chk_haproxy
+    }
+}

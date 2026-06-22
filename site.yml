@@ -1,0 +1,120 @@
+---
+# =============================================================================
+# Patroni PostgreSQL HA — 메인 플레이북
+# -----------------------------------------------------------------------------
+# 이 파일 하나가 전체 배포의 "지휘서"입니다. 위에서 아래로 순서대로 각 역할(role)을
+# 실행하며 클러스터를 완성합니다.
+#
+# 사용 예시:
+#   ansible-playbook site.yml                       # 전체 배포
+#   ansible-playbook site.yml --tags etcd,patroni   # 특정 단계만
+#   ansible-playbook site.yml --limit pg-node-1      # 특정 노드만
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 0단계) 사전 검증(preflight)
+#   실제 서버를 건드리기 전에 토폴로지가 안전한지 먼저 확인합니다.
+#   잘못된 노드 수(예: etcd 2대)로 배포되는 사고를 여기서 막습니다.
+#   localhost 에서만 동작하므로 대상 서버에 접속하지 않습니다.
+# -----------------------------------------------------------------------------
+- name: 사전 토폴로지 검증
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tags: [always]            # 어떤 --tags 를 줘도 항상 먼저 실행
+  tasks:
+    - name: etcd 는 홀수 + 최소 3대여야 함 (정족수 보장)
+      ansible.builtin.assert:
+        that:
+          - groups['etcd'] | default([]) | length >= 3
+          - (groups['etcd'] | length) % 2 == 1
+        fail_msg: >-
+          etcd 그룹은 홀수이며 최소 3대여야 합니다 (현재 {{ groups['etcd'] | default([]) | length }}대).
+          짝수/2대는 정족수를 만들 수 없어 자동 페일오버가 멈춥니다.
+        success_msg: "etcd 노드 수 정상: {{ groups['etcd'] | length }}대"
+
+    - name: PostgreSQL(DB) 노드는 최소 2대여야 함 (이중화)
+      ansible.builtin.assert:
+        that:
+          - groups['patroni_cluster'] | default([]) | length >= 2
+        fail_msg: >-
+          patroni_cluster 그룹은 최소 2대여야 합니다 (현재 {{ groups['patroni_cluster'] | default([]) | length }}대).
+        success_msg: "DB 노드 수 정상: {{ groups['patroni_cluster'] | length }}대"
+
+    - name: 모든 노드에 node_ip 가 정의되어 있어야 함
+      ansible.builtin.assert:
+        that:
+          - hostvars[item].node_ip is defined
+        fail_msg: "호스트 {{ item }} 에 node_ip 가 정의되지 않았습니다."
+      loop: "{{ (groups['etcd'] + groups['patroni_cluster']) | unique }}"
+
+    - name: Keepalived MASTER 노드는 정확히 1대여야 함
+      ansible.builtin.assert:
+        that:
+          - >-
+            (groups['haproxy'] | default([])
+             | map('extract', hostvars, 'keepalived_state')
+             | select('equalto', 'MASTER') | list | length) == 1
+        fail_msg: "haproxy 그룹에 keepalived_state=MASTER 노드가 정확히 1대 있어야 합니다."
+
+# -----------------------------------------------------------------------------
+# 1단계) 공통 기본 설정 — 모든 노드
+# -----------------------------------------------------------------------------
+- name: 모든 호스트 공통 기본 설정
+  hosts: all
+  become: true
+  roles:
+    - role: common
+      tags: [common]
+
+# -----------------------------------------------------------------------------
+# 2단계) etcd(공동 장부) 클러스터 구성
+#   serial: 1 → 한 대씩 순차적으로 부트스트랩해 정족수를 안정적으로 형성
+# -----------------------------------------------------------------------------
+- name: etcd DCS 클러스터 배포
+  hosts: etcd
+  become: true
+  serial: 1
+  roles:
+    - role: etcd
+      tags: [etcd]
+
+# -----------------------------------------------------------------------------
+# 3단계) PostgreSQL 바이너리 설치 (클러스터 초기화는 Patroni 가 담당)
+# -----------------------------------------------------------------------------
+- name: PostgreSQL 바이너리 설치
+  hosts: patroni_cluster
+  become: true
+  roles:
+    - role: postgresql
+      tags: [postgresql]
+
+# -----------------------------------------------------------------------------
+# 4단계) Patroni 설치 및 클러스터 부트스트랩
+# -----------------------------------------------------------------------------
+- name: Patroni 배포 및 클러스터 부트스트랩
+  hosts: patroni_cluster
+  become: true
+  roles:
+    - role: patroni
+      tags: [patroni]
+
+# -----------------------------------------------------------------------------
+# 5단계) PgBouncer(커넥션 풀러) 배포
+# -----------------------------------------------------------------------------
+- name: PgBouncer 커넥션 풀러 배포
+  hosts: pgbouncer
+  become: true
+  roles:
+    - role: pgbouncer
+      tags: [pgbouncer]
+
+# -----------------------------------------------------------------------------
+# 6단계) HAProxy + Keepalived(VIP 라우팅 계층) 배포
+# -----------------------------------------------------------------------------
+- name: HAProxy + Keepalived(VIP 라우팅) 배포
+  hosts: haproxy
+  become: true
+  roles:
+    - role: haproxy
+      tags: [haproxy]

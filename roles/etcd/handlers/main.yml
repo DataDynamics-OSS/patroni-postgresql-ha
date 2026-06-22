@@ -1,0 +1,7 @@
+---
+# 설정/유닛 파일이 변경되면 호출되어 etcd 를 재시작합니다.
+- name: Restart etcd
+  ansible.builtin.systemd:
+    name: etcd
+    state: restarted
+    daemon_reload: true

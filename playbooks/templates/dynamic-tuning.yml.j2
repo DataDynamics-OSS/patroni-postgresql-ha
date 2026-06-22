@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+# patronictl edit-config --apply 로 병합할 동적 설정(부분 패치)
+# 동기 복제 설정(최상위 키) + 선택한 프로파일/override PostgreSQL 파라미터를 담습니다.
+synchronous_mode: {{ patroni_synchronous_mode | bool | to_json }}
+synchronous_mode_strict: {{ patroni_synchronous_mode_strict | bool | to_json }}
+synchronous_node_count: {{ patroni_synchronous_node_count | int }}
+postgresql:
+  parameters:
+{% for k, v in merged_params.items() %}
+    {{ k }}: {{ v | to_json }}
+{% endfor %}

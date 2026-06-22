@@ -1,0 +1,67 @@
+---
+# =============================================================================
+# pgbouncer 역할 — 각 DB 노드에 커넥션 풀러 설치
+# PgBouncer 는 자기 노드의 "로컬" PostgreSQL 만 바라봅니다. 어느 노드가 쓰기 가능한
+# 리더인지는 그 앞단의 HAProxy 가 판단해 줍니다.
+# =============================================================================
+
+- name: PgBouncer 설치 (Debian/Ubuntu)
+  ansible.builtin.apt:
+    name: pgbouncer
+    state: present
+    update_cache: true
+  when: ansible_os_family == 'Debian'
+
+- name: PgBouncer 설치 (RHEL/Rocky)
+  ansible.builtin.dnf:
+    name: pgbouncer
+    state: present
+    disablerepo: "{{ '*' if offline_mode | bool else omit }}"
+    enablerepo: "{{ offline_repo_name if offline_mode | bool else omit }}"
+  when: ansible_os_family == 'RedHat'
+
+- name: PgBouncer 설정 디렉터리 생성
+  ansible.builtin.file:
+    path: /etc/pgbouncer
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: "0750"
+
+- name: PgBouncer 인증 사용자 목록(userlist) 생성
+  ansible.builtin.template:
+    src: userlist.txt.j2
+    dest: /etc/pgbouncer/userlist.txt
+    owner: postgres
+    group: postgres
+    mode: "0600"              # 비밀번호 포함 → 권한 엄격
+  notify: Restart pgbouncer
+
+- name: pgbouncer.ini 배포
+  ansible.builtin.template:
+    src: pgbouncer.ini.j2
+    dest: /etc/pgbouncer/pgbouncer.ini
+    owner: postgres
+    group: postgres
+    mode: "0640"
+  notify: Restart pgbouncer
+
+- name: PgBouncer 런타임 디렉터리 생성
+  ansible.builtin.file:
+    path: /var/run/pgbouncer
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: "0755"
+
+- name: PgBouncer 서비스 시작 및 부팅 시 자동 시작
+  ansible.builtin.systemd:
+    name: pgbouncer
+    state: started
+    enabled: true
+
+- name: PgBouncer 포트가 열릴 때까지 대기
+  ansible.builtin.wait_for:
+    host: "{{ node_ip }}"
+    port: "{{ pgbouncer_port }}"
+    timeout: 30

@@ -1,0 +1,6 @@
+---
+# 설정 파일이 변경되면 호출되어 PgBouncer 를 재시작합니다.
+- name: Restart pgbouncer
+  ansible.builtin.systemd:
+    name: pgbouncer
+    state: restarted

@@ -1,0 +1,22 @@
+---
+# =============================================================================
+# 클러스터 상태 확인 플레이북
+# 첫 번째 DB 노드에서 `patronictl list` 를 실행해 누가 리더/복제본인지,
+# 복제 지연(Lag)은 얼마인지 보여 줍니다.
+#
+# 사용법: ansible-playbook playbooks/cluster-status.yml
+# =============================================================================
+- name: Patroni 클러스터 상태 확인
+  hosts: patroni_cluster[0]        # DB 노드 중 첫 번째 한 대에서만 실행
+  become: true
+  become_user: postgres
+  gather_facts: false
+  tasks:
+    - name: patronictl list 실행
+      ansible.builtin.command: "patronictl -c {{ patroni_config_dir }}/patroni.yml list"
+      register: patroni_list
+      changed_when: false           # 조회만 하므로 변경 없음으로 표시
+
+    - name: 클러스터 구성 출력
+      ansible.builtin.debug:
+        msg: "{{ patroni_list.stdout_lines }}"
