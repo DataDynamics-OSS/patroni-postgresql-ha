@@ -1,0 +1,12 @@
+---
+# ansible-lint 설정
+profile: moderate
+
+exclude_paths:
+  - .github/
+  - scripts/
+
+skip_list:
+  - var-naming[no-role-prefix]    # 변수를 group_vars/all 에 모아 두는 설계라 role 접두어 미사용
+  - name[casing]                  # 태스크 이름이 한글이라 영문 대문자 규칙 미적용
+  - galaxy                        # Galaxy 배포용 메타데이터는 이 프로젝트 범위 밖

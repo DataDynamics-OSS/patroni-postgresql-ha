@@ -18,7 +18,7 @@
 # =============================================================================
 set -euo pipefail
 
-# --- 설치 위치 (group_vars/all.yml 의 offline_* 와 일치) --------------------
+# --- 설치 위치 (group_vars/all/main.yml 의 offline_* 와 일치) --------------------
 BASE_DIR="${BASE_DIR:-/opt/patroni-airgap}"
 REPO_NAME="${REPO_NAME:-patroni-airgap}"
 

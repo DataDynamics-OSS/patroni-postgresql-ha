@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# pgBackRest 백업 래퍼 — "현재 리더"에서만 실제 백업을 수행합니다.
+# 복제본이나 장애 중인 노드에서는 아무 일도 하지 않고 조용히 종료하므로,
+# 모든 DB 노드에 같은 cron 을 걸어 두면 페일오버 후에도 백업이 이어집니다.
+# 사용법: pgbackrest-backup.sh {full|diff|incr}
+set -euo pipefail
+
+TYPE="${1:-diff}"
+
+# Patroni REST 의 /primary 는 리더에서만 200 을 반환합니다.
+code="$(curl -s -o /dev/null -w '%{http_code}' \
+  "http://{{ node_ip }}:{{ patroni_rest_port }}/primary" || true)"
+[ "${code}" = "200" ] || exit 0
+
+exec pgbackrest --stanza={{ cluster_name }} --type="${TYPE}" backup

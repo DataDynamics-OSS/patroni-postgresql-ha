@@ -1,9 +1,14 @@
 ---
 # =============================================================================
-# 클러스터 전역 설정
+# 클러스터 전역 설정  (group_vars/all/ 디렉터리의 파일은 모두 all 그룹에 적용됨)
 # -----------------------------------------------------------------------------
 # 이 파일의 값들은 모든 노드에 공통으로 적용됩니다. 내 환경에 맞게 수정하세요.
 # 특히 cluster_vip, vip_interface, 그리고 비밀번호는 반드시 확인해야 합니다.
+#
+# 비밀번호(ChangeMe_*)는 운영에서 반드시 Vault 로 교체하세요:
+#   cp group_vars/vault.yml.example group_vars/all/vault.yml
+#   ansible-vault encrypt group_vars/all/vault.yml
+# (같은 디렉터리(all/)에 있어야 자동으로 로드되어 이 파일 값을 덮어씁니다)
 # =============================================================================
 
 # --- 클러스터 식별자 --------------------------------------------------------
@@ -12,7 +17,15 @@ cluster_name: pg-ha-cluster          # Patroni scope 이름(같은 etcd 안에�
 # --- 가상 IP(VIP, Keepalived 가 관리) ---------------------------------------
 # 애플리케이션은 이 VIP 로만 접속합니다. VIP 를 가진 노드의 HAProxy 가 트래픽을 라우팅.
 cluster_vip: 10.0.0.10               # 아직 아무도 쓰지 않는 여유 IP 를 지정
+cluster_vip_cidr: 24                 # VIP 의 프리픽스 길이(네트워크 대역에 맞게 조정)
 vip_interface: eth0                  # VIP 를 붙일 네트워크 카드 이름( `ip a` 로 확인 )
+# VRRP(노드 간 keepalived) 인증 비밀번호 — 최대 8자만 유효. 운영에서는 Vault 로 교체!
+keepalived_auth_pass: "ChgMe_Ka"
+
+# --- 방화벽 자동 개방 --------------------------------------------------------
+# true 면 각 노드에서 firewalld(RHEL)/ufw(Debian, 활성일 때만)에 필요한 포트를
+# 역할(그룹)에 맞게 자동 개방합니다. 방화벽을 직접 관리한다면 false 로 두세요.
+configure_firewall: true
 
 # --- 폐쇄망(air-gap) 오프라인 설치 ------------------------------------------
 # true 면 인터넷 의존 작업(PGDG 저장소 추가, etcd 다운로드, pip 인터넷 설치)을
@@ -191,10 +204,24 @@ etcd_token: "{{ cluster_name }}-etcd"   # 클러스터 초기화 토큰
 patroni_rest_port: 8008              # HAProxy 가 헬스체크하는 REST API 포트
 patroni_config_dir: /etc/patroni
 patroni_log_dir: /var/log/patroni
+patroni_venv_dir: /opt/patroni       # Patroni 전용 파이썬 가상환경(시스템 파이썬 오염 방지)
 patroni_ttl: 30                      # 리더 키 수명(초). 이 시간 안에 갱신 못 하면 리더 교체
 patroni_loop_wait: 10                # Patroni 주기적 점검 간격(초)
 patroni_retry_timeout: 10            # DCS/PostgreSQL 작업 재시도 타임아웃(초)
 patroni_maximum_lag_on_failover: 1048576   # 페일오버 허용 최대 복제 지연(1MB)
+
+# REST API 의 "위험한" 엔드포인트(switchover/restart 등 POST 계열)를 보호하는
+# Basic 인증. GET 헬스체크(/primary, /replica)는 인증 없이 동작하므로 HAProxy 에
+# 영향이 없습니다. patronictl 은 같은 설정 파일의 자격 증명을 자동으로 사용합니다.
+patroni_restapi_username: patroni
+patroni_restapi_password: "ChangeMe_Rest_2026!"
+
+# 워치독(watchdog): 리더 강등이 제때 안 되는 최악의 순간에 커널이 노드를 리셋해
+# split-brain 을 한 번 더 막아 줍니다.
+#   automatic : /dev/watchdog 이 사용 가능하면 쓰고, 없으면 경고만(기본, 안전)
+#   required  : watchdog 없이는 리더가 되지 않음(가장 엄격)
+#   "off"     : 사용 안 함
+patroni_watchdog_mode: automatic
 
 # --- 동기 복제(synchronous replication) ------------------------------------
 # false : 비동기 복제(기본). 리더가 standby 응답을 기다리지 않아 빠르지만,
@@ -221,7 +248,23 @@ pgbouncer_admin_password: "ChangeMe_PgB_2026!"
 
 # --- HAProxy ----------------------------------------------------------------
 haproxy_stats_port: 7000             # 통계 화면 포트(웹 브라우저로 접속)
+haproxy_stats_user: haproxy_admin    # 통계 화면 Basic 인증 계정
+haproxy_stats_password: "ChangeMe_Stats_2026!"   # 운영에서는 Vault 로 교체!
 haproxy_primary_port: 5000           # 쓰기(RW) — 항상 현재 리더로 라우팅
 haproxy_replica_port: 5001           # 읽기(RO) — 건강한 복제본으로 라운드로빈
+haproxy_maxconn: 2000                # HAProxy 전역 최대 동시 연결 수
 # HAProxy 가 보낼 백엔드 대상: PgBouncer(권장) 또는 PostgreSQL 직접
 haproxy_backend_target: pgbouncer    # "pgbouncer" 또는 "postgresql"
+# true 면 살아있는 복제본이 하나도 없을 때(예: 2노드에서 복제본 장애) 읽기 포트(5001)
+# 트래픽을 리더로 우회시켜 읽기 중단을 막습니다. 복제본이 살아 있으면 동작 변화 없음.
+haproxy_replica_fallback_to_primary: true
+
+# --- pgBackRest 백업 (옵션) --------------------------------------------------
+# HA(이중화)는 백업을 대체하지 못합니다. 실수로 DROP TABLE 하면 복제본에도 즉시
+# 전파되기 때문입니다. true 로 켜면 각 DB 노드에 pgBackRest 를 설치하고,
+# WAL 아카이빙 + 리더에서의 주기 백업(cron: 일요일 full, 평일 diff)을 구성합니다.
+pgbackrest_enabled: false
+pgbackrest_repo_path: /var/lib/pgbackrest   # 백업 저장 위치(운영: 별도 디스크/NFS 권장)
+pgbackrest_retention_full: 2                # 보관할 full 백업 개수
+pgbackrest_process_max: 2                   # 백업/복원 병렬 프로세스 수
+pgbackrest_backup_hour: 1                   # 백업 cron 실행 시각(매일 01시)

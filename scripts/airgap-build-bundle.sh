@@ -8,7 +8,7 @@
 #
 # 빌드 호스트 사전 조건:
 #   - RHEL 9 (대상과 동일 계열) + 시스템 Python 3.9
-#   - 활성화된 저장소: BaseOS/AppState, EPEL, PGDG(PostgreSQL)
+#   - 활성화된 저장소: BaseOS/AppStream, EPEL, PGDG(PostgreSQL)
 #     (postgresql16-server, pgbouncer 등을 받기 위함)
 #   - sudo 권한, 인터넷 연결
 #
@@ -18,7 +18,7 @@
 # =============================================================================
 set -euo pipefail
 
-# --- 버전/경로 (group_vars/all.yml 과 일치시킬 것) ---------------------------
+# --- 버전/경로 (group_vars/all/main.yml 과 일치시킬 것) ---------------------------
 PG_VER="${PG_VER:-16}"
 ETCD_VER="${ETCD_VER:-3.5.16}"
 # RHEL 9 시스템 Python 3.9 와 호환되는 ansible-core 범위 (2.16+ 는 Python 3.10+ 요구)
@@ -44,11 +44,13 @@ echo "==> RPM 다운로드 (의존성 포함)"
 sudo dnf download --resolve --alldeps --destdir "${OUT}/rpms" \
   python3-pip \
   python3-psycopg2 \
+  python3-libsemanage \
   acl \
   chrony \
   "postgresql${PG_VER}-server" \
   "postgresql${PG_VER}-contrib" \
   pgbouncer \
+  pgbackrest \
   haproxy \
   keepalived
 
@@ -60,9 +62,9 @@ createrepo_c "${OUT}/rpms"
 echo "==> 컨트롤 노드용 wheel 다운로드 (ansible-core)"
 python3 -m pip download --dest "${OUT}/wheels/control" ${ANSIBLE_SPEC}
 
-echo "==> 대상 노드용 wheel 다운로드 (patroni, psycopg2-binary, python-etcd)"
+echo "==> 대상 노드용 wheel 다운로드 (patroni, psycopg2-binary)"
 python3 -m pip download --dest "${OUT}/wheels/target" \
-  "patroni[etcd3]" psycopg2-binary python-etcd
+  "patroni[etcd3]" psycopg2-binary
 
 # --- 3) etcd 바이너리 ------------------------------------------------------
 echo "==> etcd ${ETCD_VER} 바이너리 다운로드"

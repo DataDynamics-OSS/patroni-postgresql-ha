@@ -9,11 +9,13 @@ global_defs {
     script_user root
 }
 
-# HAProxy 가 살아있는지 2초마다 점검. 죽으면 priority 를 낮춰 VIP 를 넘깁니다.
+# HAProxy 가 살아있는지 2초마다 점검. 실패하면 priority 를 20 낮춰 VIP 를 넘깁니다.
+# 주의: |weight| 는 노드 간 priority 차이보다 반드시 커야 합니다. 그래야 MASTER 의
+# HAProxy 가 죽었을 때 (110-20=90) < BACKUP(105) 이 되어 VIP 가 실제로 이동합니다.
 vrrp_script chk_haproxy {
     script "/etc/keepalived/check_haproxy.sh"
     interval 2
-    weight 2
+    weight -20
     fall 2
     rise 2
 }
@@ -27,11 +29,11 @@ vrrp_instance VI_PG {
 
     authentication {
         auth_type PASS
-        auth_pass {{ cluster_name[:8] }}    # 노드 간 VRRP 인증용(8자 이내)
+        auth_pass {{ keepalived_auth_pass[:8] }}    # 노드 간 VRRP 인증용(앞 8자만 유효)
     }
 
     virtual_ipaddress {
-        {{ cluster_vip }}/24 dev {{ vip_interface }}
+        {{ cluster_vip }}/{{ cluster_vip_cidr }} dev {{ vip_interface }}
     }
 
     track_script {

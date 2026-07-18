@@ -2,7 +2,7 @@
 # =============================================================================
 # PostgreSQL 튜닝 파라미터를 "실행 중인" 클러스터에 적용하는 playbook
 # -----------------------------------------------------------------------------
-# group_vars/all.yml 의 postgresql_tuning_profile / postgresql_max_connections /
+# group_vars/all/main.yml 의 postgresql_tuning_profile / postgresql_max_connections /
 # postgresql_parameters_override 를 합쳐 patronictl edit-config 로 DCS(etcd)에
 # 반영합니다. Patroni 가 즉시 reload 하며, 재시작이 필요한 항목은 "pending restart"
 # 로 표시됩니다(이 경우 playbooks/restart-postgresql.yml 실행).
@@ -32,6 +32,17 @@
       ansible.builtin.set_fact:
         merged_params: "{{ merged_params | combine({'max_connections': postgresql_max_connections}) }}"
       when: postgresql_max_connections | string | length > 0
+
+    # pgBackRest 를 켰다면 WAL 아카이빙 파라미터도 함께 반영합니다.
+    # (archive_mode 는 재시작 필요 → 이후 restart-postgresql.yml 실행)
+    - name: pgBackRest 아카이빙 파라미터 반영 (옵션)
+      ansible.builtin.set_fact:
+        merged_params: >-
+          {{ merged_params | combine({
+               'archive_mode': 'on',
+               'archive_command': 'pgbackrest --stanza=' ~ cluster_name ~ ' archive-push %p'
+             }) }}
+      when: pgbackrest_enabled | bool
 
     - name: 적용할 설정 미리보기
       ansible.builtin.debug:

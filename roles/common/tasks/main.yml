@@ -17,6 +17,7 @@
   ansible.builtin.apt:
     name:
       - python3-pip
+      - python3-venv         # Patroni 전용 가상환경 생성에 필요
       - python3-psycopg2     # Ansible 의 PostgreSQL 모듈이 사용
       - acl                  # become_user 전환 시 파일 권한 처리에 필요
       - curl
@@ -69,3 +70,72 @@
     - { name: "vm.overcommit_memory", value: "2" }     # 메모리 과다 할당 방지
     - { name: "vm.swappiness", value: "1" }            # 스왑 사용 최소화
     - { name: "net.ipv4.tcp_keepalive_time", value: "300" }   # 죽은 연결 빠른 정리
+
+# ----------------------------------------------------------------------------
+# 방화벽 자동 개방 (configure_firewall=true 일 때)
+#   RHEL 9 는 firewalld 가 기본 활성이라, 포트를 열지 않으면 etcd 정족수 형성부터
+#   실패합니다. 노드가 속한 그룹(역할)에 맞는 포트만 골라서 엽니다.
+#   방화벽을 직접 관리한다면 group_vars 에서 configure_firewall: false 로 끄세요.
+# ----------------------------------------------------------------------------
+- name: 이 노드에서 개방할 포트 계산 (소속 그룹 기준)
+  ansible.builtin.set_fact:
+    node_firewall_ports: >-
+      {{ (([etcd_client_port, etcd_peer_port]
+             if inventory_hostname in (groups['etcd'] | default([])) else [])
+        + ([postgresql_port, patroni_rest_port]
+             if inventory_hostname in (groups['patroni_cluster'] | default([])) else [])
+        + ([pgbouncer_port]
+             if inventory_hostname in (groups['pgbouncer'] | default([])) else [])
+        + ([haproxy_primary_port, haproxy_replica_port, haproxy_stats_port]
+             if inventory_hostname in (groups['haproxy'] | default([])) else []))
+        | map('int') | list }}
+  when: configure_firewall | bool
+
+- name: 서비스 상태 수집 (firewalld 활성 여부 확인용, RHEL)
+  ansible.builtin.service_facts:
+  when: configure_firewall | bool and is_redhat
+
+- name: 방화벽 포트 개방 (firewalld)
+  ansible.posix.firewalld:
+    port: "{{ item }}/tcp"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ node_firewall_ports }}"
+  when:
+    - configure_firewall | bool
+    - is_redhat
+    - (ansible_facts.services['firewalld.service'].state | default('')) == 'running'
+
+# Keepalived 노드끼리는 VRRP(프로토콜 112)로 VIP 소유권을 주고받습니다.
+- name: VRRP 프로토콜 허용 (firewalld, haproxy 노드)
+  ansible.posix.firewalld:
+    protocol: vrrp
+    permanent: true
+    immediate: true
+    state: enabled
+  when:
+    - configure_firewall | bool
+    - is_redhat
+    - (ansible_facts.services['firewalld.service'].state | default('')) == 'running'
+    - inventory_hostname in (groups['haproxy'] | default([]))
+
+- name: ufw 활성 여부 확인 (Debian)
+  ansible.builtin.command: ufw status
+  register: ufw_state
+  changed_when: false
+  failed_when: false
+  when: configure_firewall | bool and is_debian
+
+# ufw 는 VRRP 프로토콜 규칙을 지원하지 않습니다. Debian 에서 ufw 를 쓰면서
+# keepalived 를 함께 쓴다면 VRRP(224.0.0.18) 허용 규칙은 직접 추가해야 합니다.
+- name: 방화벽 포트 개방 (ufw)
+  community.general.ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop: "{{ node_firewall_ports }}"
+  when:
+    - configure_firewall | bool
+    - is_debian
+    - "'Status: active' in (ufw_state.stdout | default(''))"

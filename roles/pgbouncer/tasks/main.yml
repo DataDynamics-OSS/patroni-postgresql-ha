@@ -20,20 +20,35 @@
     enablerepo: "{{ offline_repo_name if offline_mode | bool else omit }}"
   when: ansible_os_family == 'RedHat'
 
+# 패키지가 사용하는 서비스 계정이 배포판마다 다릅니다:
+#   Debian 계열 → postgres 로 실행,  RHEL(PGDG) → 전용 pgbouncer 계정으로 실행.
+# 설정 파일 소유자를 서비스 계정과 맞추지 않으면 RHEL 에서 기동에 실패합니다.
+- name: PgBouncer 서비스 계정 결정
+  ansible.builtin.set_fact:
+    pgbouncer_user: "{{ 'postgres' if ansible_os_family == 'Debian' else 'pgbouncer' }}"
+
 - name: PgBouncer 설정 디렉터리 생성
   ansible.builtin.file:
     path: /etc/pgbouncer
     state: directory
-    owner: postgres
-    group: postgres
+    owner: "{{ pgbouncer_user }}"
+    group: "{{ pgbouncer_user }}"
+    mode: "0750"
+
+- name: PgBouncer 로그 디렉터리 생성
+  ansible.builtin.file:
+    path: /var/log/pgbouncer
+    state: directory
+    owner: "{{ pgbouncer_user }}"
+    group: "{{ pgbouncer_user }}"
     mode: "0750"
 
 - name: PgBouncer 인증 사용자 목록(userlist) 생성
   ansible.builtin.template:
     src: userlist.txt.j2
     dest: /etc/pgbouncer/userlist.txt
-    owner: postgres
-    group: postgres
+    owner: "{{ pgbouncer_user }}"
+    group: "{{ pgbouncer_user }}"
     mode: "0600"              # 비밀번호 포함 → 권한 엄격
   notify: Restart pgbouncer
 
@@ -41,18 +56,26 @@
   ansible.builtin.template:
     src: pgbouncer.ini.j2
     dest: /etc/pgbouncer/pgbouncer.ini
-    owner: postgres
-    group: postgres
+    owner: "{{ pgbouncer_user }}"
+    group: "{{ pgbouncer_user }}"
     mode: "0640"
   notify: Restart pgbouncer
 
-- name: PgBouncer 런타임 디렉터리 생성
-  ansible.builtin.file:
-    path: /var/run/pgbouncer
-    state: directory
-    owner: postgres
-    group: postgres
-    mode: "0755"
+# /var/run(/run)은 tmpfs 라서 재부팅하면 사라집니다. file 모듈로 한 번 만들면
+# 다음 부팅부터 pidfile/socket 을 쓸 수 없으므로 tmpfiles.d 로 영구 등록합니다.
+- name: PgBouncer 런타임 디렉터리 tmpfiles.d 등록 (재부팅에도 유지)
+  ansible.builtin.copy:
+    content: "d /run/pgbouncer 0755 {{ pgbouncer_user }} {{ pgbouncer_user }} -\n"
+    dest: /etc/tmpfiles.d/pgbouncer.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: pgbouncer_tmpfiles
+
+- name: PgBouncer 런타임 디렉터리 즉시 생성 (systemd-tmpfiles)
+  ansible.builtin.command: systemd-tmpfiles --create /etc/tmpfiles.d/pgbouncer.conf
+  when: pgbouncer_tmpfiles is changed
+  changed_when: true
 
 - name: PgBouncer 서비스 시작 및 부팅 시 자동 시작
   ansible.builtin.systemd:

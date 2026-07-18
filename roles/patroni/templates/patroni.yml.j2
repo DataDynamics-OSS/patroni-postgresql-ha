@@ -15,9 +15,14 @@ log:
   file_size: 25000000
 
 # --- REST API (HAProxy 헬스체크 및 patronictl 이 사용) ---
+# authentication 은 switchover/restart 같은 "위험한"(POST 계열) 엔드포인트만 보호합니다.
+# GET 헬스체크(/primary, /replica)는 그대로 열려 있어 HAProxy 에 영향이 없습니다.
 restapi:
   listen: {{ node_ip }}:{{ patroni_rest_port }}
   connect_address: {{ node_ip }}:{{ patroni_rest_port }}
+  authentication:
+    username: {{ patroni_restapi_username }}
+    password: "{{ patroni_restapi_password }}"
 
 # --- etcd 접속 정보 (모든 etcd 멤버를 나열) ---
 etcd3:
@@ -31,8 +36,15 @@ etcd3:
 {%- if postgresql_max_connections is defined and (postgresql_max_connections | string | length > 0) -%}
 {%-   set _ = _merged.update({'max_connections': postgresql_max_connections}) -%}
 {%- endif -%}
+{#- -- pgBackRest 백업을 켰다면 WAL 아카이빙 파라미터를 함께 적용 -- -#}
+{%- if pgbackrest_enabled | bool -%}
+{%-   set _ = _merged.update({'archive_mode': 'on',
+        'archive_command': 'pgbackrest --stanza=' ~ cluster_name ~ ' archive-push %p'}) -%}
+{%- endif -%}
 {#- -- pg_hba.conf 라인 동적 생성: 루프백 + 허용 CIDR + 노드 간 복제 -- -#}
+{#- postgres OS 계정의 로컬 소켓 접속은 peer 인증(비밀번호 불필요) — pgBackRest·관리 작업용 -#}
 {%- set _hba = [] -%}
+{%- set _ = _hba.append('local all postgres peer') -%}
 {%- set _ = _hba.append('local all all ' ~ postgresql_auth_method) -%}
 {%- for cidr in postgresql_allowed_cidrs -%}
 {%-   set _ = _hba.append('host all all ' ~ cidr ~ ' ' ~ postgresql_auth_method) -%}
@@ -79,7 +91,7 @@ postgresql:
   connect_address: {{ node_ip }}:{{ postgresql_port }}
   data_dir: {{ postgresql_data_dir }}
   bin_dir: {{ postgresql_bin_dir }}
-  pgpass: /tmp/pgpass0
+  pgpass: {{ patroni_config_dir }}/.pgpass    # 모두가 쓰는 /tmp 대신 전용 디렉터리에 보관
 
   # 런타임 pg_hba 관리: 이 값이 있으면 Patroni 가 pg_hba.conf 를 직접 작성하고,
   # reload 시 변경분을 "재시작 없이" 반영합니다. (allowed_cidrs 변경 → --tags patroni 재실행)
@@ -102,6 +114,12 @@ postgresql:
 
   parameters:
     unix_socket_directories: "/var/run/postgresql, /tmp"
+
+# --- 워치독 — 리더 강등 실패 시 커널이 노드를 리셋해 split-brain 을 추가로 방지 ---
+watchdog:
+  mode: {{ patroni_watchdog_mode }}       # off | automatic | required
+  device: /dev/watchdog
+  safety_margin: 5
 
 # --- 노드 태그(역할 제어) ---
 tags:

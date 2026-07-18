@@ -3,7 +3,7 @@
 # HAProxy 설정 — Patroni REST API 로 "지금의 리더"를 찾아 트래픽을 길안내합니다.
 # =============================================================================
 global
-    maxconn 1000
+    maxconn {{ haproxy_maxconn }}
     log /dev/log local0
 
 defaults
@@ -23,6 +23,7 @@ listen stats
     stats uri /
     stats refresh 5s
     stats show-legends
+    stats auth {{ haproxy_stats_user }}:{{ haproxy_stats_password }}
 
 {% set backend_port = pgbouncer_port if haproxy_backend_target == 'pgbouncer' else postgresql_port %}
 # ---- 쓰기(Read/Write) — 오직 "현재 리더" 한 곳으로만 보냅니다 ----
@@ -39,6 +40,31 @@ listen postgres_primary
 
 # ---- 읽기(Read Only) — 건강한 복제본들로 라운드로빈 분산 ----
 #   Patroni 의 /replica 엔드포인트는 정상 동작 중인 복제본에서 HTTP 200 을 반환합니다.
+{% if haproxy_replica_fallback_to_primary | bool %}
+#   복제본이 하나도 없으면(예: 2노드에서 복제본 장애) 읽기를 리더로 우회시켜
+#   읽기 중단을 막습니다. 복제본이 살아 있는 동안에는 동작이 달라지지 않습니다.
+frontend postgres_replicas_front
+    bind *:{{ haproxy_replica_port }}
+    use_backend postgres_primary_fallback if { nbsrv(postgres_replicas) lt 1 }
+    default_backend postgres_replicas
+
+backend postgres_replicas
+    balance roundrobin
+    option httpchk GET /replica
+    http-check expect status 200
+    default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions
+{% for h in groups['patroni_cluster'] %}
+    server {{ h }} {{ hostvars[h].node_ip }}:{{ backend_port }} check port {{ patroni_rest_port }}
+{% endfor %}
+
+backend postgres_primary_fallback
+    option httpchk GET /primary
+    http-check expect status 200
+    default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions
+{% for h in groups['patroni_cluster'] %}
+    server {{ h }} {{ hostvars[h].node_ip }}:{{ backend_port }} check port {{ patroni_rest_port }}
+{% endfor %}
+{% else %}
 listen postgres_replicas
     bind *:{{ haproxy_replica_port }}
     balance roundrobin
@@ -48,3 +74,4 @@ listen postgres_replicas
 {% for h in groups['patroni_cluster'] %}
     server {{ h }} {{ hostvars[h].node_ip }}:{{ backend_port }} check port {{ patroni_rest_port }}
 {% endfor %}
+{% endif %}

@@ -1,0 +1,20 @@
+# {{ ansible_managed }}
+# =============================================================================
+# pgBackRest 설정 — {{ inventory_hostname }}
+# 저장소(repo1-path)는 기본이 로컬 디스크입니다. 운영에서는 별도 디스크·NFS·
+# 오브젝트 스토리지(S3 호환) 등 "DB 와 운명을 같이하지 않는" 위치를 권장합니다.
+# =============================================================================
+[global]
+repo1-path={{ pgbackrest_repo_path }}
+repo1-retention-full={{ pgbackrest_retention_full }}
+process-max={{ pgbackrest_process_max }}
+log-path=/var/log/pgbackrest
+log-level-console=info
+log-level-file=detail
+start-fast=y                      # 백업 시작 시 즉시 체크포인트(대기 시간 단축)
+compress-type=zst                 # 빠르고 효율적인 zstandard 압축
+
+[{{ cluster_name }}]
+pg1-path={{ postgresql_data_dir }}
+pg1-port={{ postgresql_port }}
+pg1-socket-path=/var/run/postgresql

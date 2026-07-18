@@ -4,18 +4,30 @@
 # Patroni 가 PostgreSQL 을 직접 기동/승격/강등하고, etcd 에 리더 정보를 기록합니다.
 # =============================================================================
 
-- name: pip 로 Patroni + etcd 클라이언트 설치
+# 시스템 파이썬을 오염시키지 않도록 전용 가상환경(venv)에 설치합니다.
+# (Debian 의 --break-system-packages 우회도 더 이상 필요 없음)
+- name: Patroni 전용 가상환경(venv)에 Patroni 설치
   ansible.builtin.pip:
     name:
       - "patroni[etcd3]"     # etcd v3 API 지원 포함
       - psycopg2-binary
-      - python-etcd
     state: present
+    virtualenv: "{{ patroni_venv_dir }}"
+    virtualenv_command: "python3 -m venv"
     # 폐쇄망: 인터넷 대신 로컬 wheelhouse 에서 설치(--no-index --find-links).
-    # Debian 온라인: 시스템 파이썬 보호 정책 때문에 --break-system-packages 필요.
     extra_args: >-
-      {{ ('--no-index --find-links ' ~ offline_wheelhouse) if offline_mode | bool
-         else ('--break-system-packages' if ansible_os_family == 'Debian' else omit) }}
+      {{ ('--no-index --find-links ' ~ offline_wheelhouse) if offline_mode | bool else omit }}
+
+# 운영자가 어느 노드에서든 `patronictl` 을 바로 칠 수 있게 PATH 에 링크를 둡니다.
+- name: patroni / patronictl 명령을 /usr/local/bin 에 링크
+  ansible.builtin.file:
+    src: "{{ patroni_venv_dir }}/bin/{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    state: link
+    force: true              # 과거 pip 전역 설치본이 있어도 링크로 교체
+  loop:
+    - patroni
+    - patronictl
 
 # postgresql 역할에서 set_fact 한 값은 다른 플레이에서 사라질 수 있어 다시 계산합니다.
 - name: PostgreSQL bin 디렉터리 경로 재설정(멱등)
@@ -37,6 +49,42 @@
     owner: postgres
     group: postgres
     mode: "0750"
+
+# ----------------------------------------------------------------------------
+# 워치독(watchdog) — 리더 강등이 늦어지는 최악의 상황에서 커널이 노드를 리셋해
+# split-brain 을 한 번 더 막습니다. mode=automatic 이면 장치가 없어도 무해합니다.
+# ----------------------------------------------------------------------------
+- name: 워치독(softdog) 설정
+  when: patroni_watchdog_mode != 'off'
+  block:
+    - name: softdog 커널 모듈을 부팅 시 로드하도록 등록
+      ansible.builtin.copy:
+        content: "softdog\n"
+        dest: /etc/modules-load.d/softdog.conf
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: softdog 커널 모듈 즉시 로드
+      community.general.modprobe:
+        name: softdog
+        state: present
+      failed_when: false     # 컨테이너 등 모듈 로드가 불가한 환경에서도 배포는 계속
+
+    - name: /dev/watchdog 을 postgres 소유로 (udev 규칙)
+      ansible.builtin.copy:
+        content: 'KERNEL=="watchdog", OWNER="postgres", MODE="0600"'
+        dest: /etc/udev/rules.d/99-patroni-watchdog.rules
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: /dev/watchdog 소유권 즉시 반영
+      ansible.builtin.file:
+        path: /dev/watchdog
+        owner: postgres
+        mode: "0600"
+      failed_when: false     # 장치가 없으면 무시(automatic 모드는 경고만 남김)
 
 - name: Patroni 설정 파일 배포
   ansible.builtin.template:
@@ -64,6 +112,7 @@
     daemon_reload: true
 
 # Patroni 가 떠서 REST API 가 응답할 때까지 기다립니다(200=정상, 503=아직 준비중).
+# 접속 자체가 안 되는 동안(status=-1)은 until 이 거짓이므로 계속 재시도합니다.
 - name: Patroni REST API 응답 대기
   ansible.builtin.uri:
     url: "http://{{ node_ip }}:{{ patroni_rest_port }}/health"
@@ -71,17 +120,22 @@
   register: patroni_health
   retries: 30
   delay: 5
-  until: patroni_health.status is defined
+  until: patroni_health.status | default(-1) in [200, 503]
 
 # 클러스터 전체에서 리더가 한 명 선출될 때까지 기다립니다(한 번만 확인).
+# /cluster 는 어느 노드에 물어봐도 전체 멤버 목록을 주므로, "이 노드가 리더가 아니면
+# 영원히 기다리는" 문제 없이 재실행(멱등)에도 안전합니다.
 - name: 클러스터 리더 선출 대기
   ansible.builtin.uri:
-    url: "http://{{ node_ip }}:{{ patroni_rest_port }}/leader"
-    status_code: [200, 503]
-  register: leader_check
+    url: "http://{{ node_ip }}:{{ patroni_rest_port }}/cluster"
+    return_content: true
+  register: cluster_state
   retries: 30
   delay: 5
-  until: leader_check.status == 200
+  until: >-
+    cluster_state.status | default(-1) == 200 and
+    ((cluster_state.json | default({})).members | default([])
+     | selectattr('role', 'equalto', 'leader') | list | length) > 0
   run_once: true
 
 # ----------------------------------------------------------------------------

@@ -29,7 +29,8 @@ reserve_pool_timeout = 3
 server_reset_query = DISCARD ALL
 ignore_startup_parameters = extra_float_digits
 
-logfile = /var/log/postgresql/pgbouncer.log
+; Debian 전용 경로(/var/log/postgresql)가 아닌, 두 배포판 모두 존재하는 전용 디렉터리 사용
+logfile = /var/log/pgbouncer/pgbouncer.log
 pidfile = /var/run/pgbouncer/pgbouncer.pid
 
 ; 페일오버로 끊긴 서버 연결을 빨리 정리해 클라이언트가 새 리더로 재접속하도록 함

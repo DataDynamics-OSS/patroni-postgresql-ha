@@ -17,8 +17,8 @@
 답할 수 있어야 비로소 "쓸 만한" 이중화가 됩니다.
 
 - 지금 이 순간 **누가 진짜 리더(쓰기를 받는 서버)인가**를 모두가 합의할 수 있는가?
-- 리더이 갑자기 죽었을 때, **누가 다음 리더이 될지** 자동으로 정해지는가?
-- 애플리케이션은 리더이 바뀌어도 **접속 주소를 바꾸지 않고** 계속 연결할 수 있는가?
+- 리더가 갑자기 죽었을 때, **누가 다음 리더가 될지** 자동으로 정해지는가?
+- 애플리케이션은 리더가 바뀌어도 **접속 주소를 바꾸지 않고** 계속 연결할 수 있는가?
 
 이 프로젝트는 위 세 가지 질문에 답하기 위해, 검증된 오픈소스 도구들을 Ansible로 한 번에
 설치하고 설정합니다. 사용하는 도구는 다음과 같습니다.
@@ -27,7 +27,7 @@
 |------|-----------|
 | **PostgreSQL** | 실제 데이터를 저장하는 데이터베이스 본체 |
 | **Patroni** | 누가 리더인지 정하고, 죽으면 자동으로 새 리더을 뽑는 "지휘자" |
-| **etcd** | 모두가 함께 들여다보는 "공동 장부". 리더이 누구인지 여기에 기록 |
+| **etcd** | 모두가 함께 들여다보는 "공동 장부". 리더가 누구인지 여기에 기록 |
 | **PgBouncer** | 수많은 접속을 모아서 효율적으로 전달하는 "접속 중개소" |
 | **HAProxy** | 들어온 요청을 지금의 리더에게 길안내하는 "교통 정리원" |
 | **Keepalived** | 고정 접속 주소(VIP)를 살아있는 서버에 붙여 주는 "주소 관리인" |
@@ -69,7 +69,7 @@ flowchart TD
 ```
 
 이 그림에서 꼭 기억할 점은 두 가지입니다. 첫째, **누가 리더인지는 PostgreSQL끼리 정하지
-않고 etcd라는 공동 장부를 통해 정해집니다.** 둘째, **애플리케이션은 리더이 바뀌어도 늘
+않고 etcd라는 공동 장부를 통해 정해집니다.** 둘째, **애플리케이션은 리더가 바뀌어도 늘
 같은 VIP 주소로만 접속하면 됩니다.** 길안내는 HAProxy가 알아서 해 줍니다.
 
 ---
@@ -100,7 +100,7 @@ sequenceDiagram
 ```
 
 핵심은 사람이 새벽에 일어나 손으로 조치하지 않아도, 보통 **수 초에서 수십 초 안에** 새
-리더이 정해지고 트래픽이 자동으로 옮겨간다는 점입니다.
+리더가 정해지고 트래픽이 자동으로 옮겨간다는 점입니다.
 
 ---
 
@@ -114,10 +114,10 @@ Patroni를 고른 데에는 분명한 이유가 있습니다. 초보자 입장�
   사람이 개입해야 하는 경우가 많았습니다. Patroni는 etcd라는 합의 저장소를 심판으로 삼아,
   사람 없이도 안전하게 새 리더를 뽑습니다.
 
-- **"양쪽이 서로 자기가 리더이라 우기는" 사고(split-brain)를 구조적으로 막습니다.**
-  이중화에서 가장 무서운 사고는 서버 두 대가 동시에 "내가 리더"이라며 각자 쓰기를 받는
+- **"양쪽이 서로 자기가 리더라 우기는" 사고(split-brain)를 구조적으로 막습니다.**
+  이중화에서 가장 무서운 사고는 서버 두 대가 동시에 "내가 리더"라며 각자 쓰기를 받는
   상황입니다. 데이터가 갈라져 복구가 매우 어려워집니다. Patroni는 etcd의 정족수(과반수
-  합의)를 통해 "장부에 리더 키를 가진 단 하나의 노드만 리더"이라는 규칙을 강제하므로,
+  합의)를 통해 "장부에 리더 키를 가진 단 하나의 노드만 리더"라는 규칙을 강제하므로,
   이 사고가 구조적으로 일어나기 어렵습니다.
 
 - **설정이 클러스터 전체에 일관되게 적용됩니다.**
@@ -142,7 +142,7 @@ Patroni를 고른 데에는 분명한 이유가 있습니다. 초보자 입장�
 ## 5. 소프트웨어 버전 요구사항
 
 버전이 어긋나면 사소한 곳에서 발목을 잡힙니다. 아래 표는 이 플레이북이 검증·권장하는
-버전입니다. 대부분 `group_vars/all.yml`에서 바꿀 수 있습니다.
+버전입니다. 대부분 `group_vars/all/main.yml`에서 바꿀 수 있습니다.
 
 ### 제어 노드(Ansible을 실행하는 내 PC/서버)
 
@@ -163,16 +163,16 @@ Patroni를 고른 데에는 분명한 이유가 있습니다. 초보자 입장�
 
 | 소프트웨어 | 권장 버전 | 왜 이 버전인가 |
 |-----------|----------|----------------|
-| **PostgreSQL** | **16** (PGDG 저장소) | `all.yml`의 `postgresql_version`으로 변경 가능 (14·15·17 등) |
+| **PostgreSQL** | **16** (PGDG 저장소) | `all/main.yml`의 `postgresql_version`으로 변경 가능 (14·15·17 등) |
 | **Patroni** | **3.x** (pip 최신) | Python 3.7 이상 필요. etcd v3 API 지원 |
-| **etcd** | **3.5.x** | v3 API 사용. `all.yml`의 `etcd_version` |
+| **etcd** | **3.5.x** | v3 API 사용. `all/main.yml`의 `etcd_version` |
 | **PgBouncer** | **1.21 이상 권장** | `scram-sha-256` 인증을 온전히 지원하는 버전대 |
 | **HAProxy** | **2.x 이상** | `http-check expect status` 문법 사용 |
 | **Keepalived** | **2.x 이상** | VRRP 기반 VIP 관리 |
 | OS | Debian/Ubuntu 또는 RHEL/Rocky | 양쪽 계열 모두 지원 |
 | Python (대상 노드) | 3.9 이상 | Patroni 및 Ansible 모듈 실행 |
 
-> 버전을 바꾸고 싶다면 `group_vars/all.yml`의 `postgresql_version`, `etcd_version` 값을
+> 버전을 바꾸고 싶다면 `group_vars/all/main.yml`의 `postgresql_version`, `etcd_version` 값을
 > 수정하면 됩니다. PgBouncer·HAProxy·Keepalived는 OS 패키지 저장소의 버전을 사용합니다.
 
 ---
@@ -295,10 +295,15 @@ all:
    제어 노드에서 **SSH 키로 접속**할 수 있고 **sudo 권한**이 있어야 합니다.
 
 2. **네트워크/방화벽 개방.** 노드 사이에 아래 포트가 열려 있어야 합니다. 포트는 모두
-   `group_vars/all.yml`의 변수로 바꿀 수 있으며(기본값은 아래 표), **포트를 바꾸면 방화벽에서
+   `group_vars/all/main.yml`의 변수로 바꿀 수 있으며(기본값은 아래 표), **포트를 바꾸면 방화벽에서
    열어줄 포트도 같은 값으로 맞춰야** 합니다.
 
-   | 기본 포트 | 용도 | 변경 변수 (`all.yml`) |
+   > 노드 자체의 OS 방화벽(RHEL의 firewalld, Debian의 ufw)은 기본값
+   > `configure_firewall: true`일 때 플레이북이 **역할에 맞는 포트를 자동으로 열어
+   > 줍니다**(활성화된 방화벽에만 적용). 방화벽을 직접 관리한다면 `false`로 끄세요.
+   > 단, 노드 "사이"의 네트워크 장비·클라우드 보안그룹은 직접 열어야 합니다.
+
+   | 기본 포트 | 용도 | 변경 변수 (`all/main.yml`) |
    |------|------|------|
    | 2379, 2380 | etcd (클라이언트 / 피어) | `etcd_client_port` / `etcd_peer_port` |
    | 5432 | PostgreSQL | `postgresql_port` |
@@ -337,7 +342,7 @@ all:
 
 ### (2) 전역 변수 — VIP, 버전, 튜닝
 
-`group_vars/all.yml`을 열어 최소한 다음 두 가지는 반드시 내 환경에 맞춰야 합니다.
+`group_vars/all/main.yml`을 열어 최소한 다음 두 가지는 반드시 내 환경에 맞춰야 합니다.
 
 ```yaml
 cluster_vip: 10.0.0.10     # 애플리케이션이 접속할 고정 주소(아직 아무도 안 쓰는 IP)
@@ -368,7 +373,7 @@ ansible-playbook site.yml --tags patroni
 ### (4) 튜닝 프로파일 — 규모에 맞는 `postgresql.conf`
 
 기본값(`postgresql.conf`)은 "프리사이즈 티셔츠"라 어떤 서버에도 딱 맞지 않습니다. 그래서
-이 프로젝트는 **DB 서버 RAM 기준**의 규모별 프로파일을 제공합니다. `all.yml`에서 하나만
+이 프로젝트는 **DB 서버 RAM 기준**의 규모별 프로파일을 제공합니다. `all/main.yml`에서 하나만
 고르면 됩니다.
 
 ```yaml
@@ -438,14 +443,38 @@ patroni_synchronous_node_count: 1       # 동기적으로 확인받을 standby �
 
 ### (6) 비밀번호 — 반드시 Vault로 암호화
 
-`all.yml`에는 `ChangeMe_...` 형태의 임시 비밀번호가 들어 있습니다. **운영 환경에서는
+`all/main.yml`에는 `ChangeMe_...` 형태의 임시 비밀번호가 들어 있습니다. **운영 환경에서는
 반드시** 아래처럼 Vault로 암호화한 실제 비밀번호로 교체하세요.
 
 ```bash
-cp group_vars/vault.yml.example group_vars/vault.yml
+cp group_vars/vault.yml.example group_vars/all/vault.yml
 # 편집기로 vault.yml 의 값들을 실제 비밀번호로 수정한 뒤
-ansible-vault encrypt group_vars/vault.yml
+ansible-vault encrypt group_vars/all/vault.yml
 ```
+
+> ⚠️ 복사 위치는 `group_vars/` 바로 아래가 아니라 **반드시 `group_vars/all/` 안**이어야
+> 합니다. Ansible은 `group_vars/` 밑의 파일명을 "그룹 이름"으로 해석하는데 `vault`라는
+> 그룹은 없으므로, `group_vars/vault.yml`에 두면 **에러 없이 조용히 무시**되어 임시
+> 비밀번호가 그대로 배포됩니다. `group_vars/all/` 디렉터리 안의 파일은 전부 자동
+> 로드되므로 `all/vault.yml`이 `all/main.yml`의 값을 안전하게 덮어씁니다.
+
+### (7) 그 밖의 운영 옵션 — 백업·워치독·읽기 폴백
+
+`all/main.yml`에서 켜고 끌 수 있는 운영 옵션들입니다. 기본값 그대로도 동작하지만,
+운영 환경이라면 한 번씩 읽어 보고 결정하세요.
+
+| 변수 | 기본값 | 설명 |
+|------|--------|------|
+| `pgbackrest_enabled` | `false` | **백업.** HA는 백업을 대체하지 못합니다(실수로 지운 데이터는 복제본에도 즉시 전파). `true`면 pgBackRest를 설치하고 WAL 아카이빙 + 리더에서만 도는 주기 백업 cron(일요일 full, 평일 diff)을 구성합니다. 저장 위치는 `pgbackrest_repo_path`(기본 로컬 디스크 — 운영은 별도 디스크/NFS 권장). |
+| `patroni_watchdog_mode` | `automatic` | **워치독.** 리더 강등이 제때 안 되는 최악의 순간에 커널이 노드를 리셋해 split-brain을 한 번 더 막습니다. `automatic`은 장치가 없으면 경고만 남기므로 안전합니다. |
+| `haproxy_replica_fallback_to_primary` | `true` | 살아있는 복제본이 하나도 없을 때(예: 2노드에서 복제본 장애) 읽기 포트(5001)를 리더로 우회시켜 읽기 중단을 막습니다. |
+| `configure_firewall` | `true` | firewalld/ufw가 활성인 노드에서 역할에 맞는 포트를 자동 개방합니다(8장 참고). |
+| `patroni_restapi_username/password` | `patroni` / `ChangeMe...` | Patroni REST의 **위험한 엔드포인트**(switchover 등 POST 계열)를 Basic 인증으로 보호합니다. 헬스체크(GET)는 영향 없습니다. |
+| `haproxy_stats_user/password` | `haproxy_admin` / `ChangeMe...` | HAProxy 통계 화면(7000 포트) 접속 인증. |
+
+> 이미 운영 중인 클러스터에서 나중에 `pgbackrest_enabled`를 켰다면:
+> `site.yml --tags pgbackrest` → `apply-tuning.yml`(아카이빙 파라미터 반영) →
+> `restart-postgresql.yml`(`archive_mode`는 재시작 필요) 순서로 적용하세요.
 
 ---
 
@@ -471,8 +500,9 @@ ansible-playbook site.yml --ask-vault-pass
 4. **postgresql** — PostgreSQL 바이너리를 설치합니다(클러스터 초기화는 Patroni가 담당).
 5. **patroni** — Patroni를 설치하고 클러스터를 부트스트랩한 뒤, 리더에서 애플리케이션용
    DB와 사용자를 만듭니다.
-6. **pgbouncer** — 각 노드에 커넥션 풀러를 올립니다.
-7. **haproxy** — HAProxy와 Keepalived(VIP)를 설정합니다.
+6. **pgbackrest** — (옵션, `pgbackrest_enabled=true`일 때만) 백업 도구를 구성합니다.
+7. **pgbouncer** — 각 노드에 커넥션 풀러를 올립니다.
+8. **haproxy** — HAProxy와 Keepalived(VIP)를 설정합니다.
 
 특정 단계만 실행하고 싶다면 태그를 쓰면 됩니다.
 
@@ -501,13 +531,17 @@ patronictl -c /etc/patroni/patroni.yml list
 
 출력에서 한 노드가 `Leader`, 나머지가 `Replica`로 보이고 `Lag`이 작으면 정상입니다.
 HAProxy 통계 화면(`http://<노드IP>:7000/`)에서도 어떤 백엔드가 살아있는지 눈으로 볼 수
-있습니다.
+있습니다(접속 계정은 `haproxy_stats_user`/`haproxy_stats_password`).
+
+> 모니터링을 붙이고 싶다면: Patroni는 Prometheus 형식의 지표를
+> `http://<노드IP>:8008/metrics` 로 기본 제공합니다. Prometheus + Grafana 만 연결하면
+> 리더 상태·복제 지연 등을 바로 수집할 수 있습니다.
 
 ---
 
 ## 12. 애플리케이션에서 접속하기
 
-애플리케이션은 개별 DB 서버 IP가 아니라 **항상 VIP로만** 접속합니다. 그래야 리더이 바뀌어도
+애플리케이션은 개별 DB 서버 IP가 아니라 **항상 VIP로만** 접속합니다. 그래야 리더가 바뀌어도
 접속 설정을 바꿀 필요가 없습니다.
 
 | 용도 | 접속 주소 | 포트 |
@@ -521,7 +555,7 @@ psql "host=10.0.0.10 port=5000 dbname=appdb user=appuser"
 ```
 
 > 배포 과정에서 `appuser`(애플리케이션 사용자)가 만들어지고, `appdb`가 **그 사용자를
-> 소유자(owner)로** 생성됩니다. 사용자명·DB명·소유 관계는 `all.yml`의 `app_db_*`
+> 소유자(owner)로** 생성됩니다. 사용자명·DB명·소유 관계는 `all/main.yml`의 `app_db_*`
 > 변수로 바꿀 수 있습니다.
 
 ---
@@ -538,12 +572,12 @@ ansible-playbook playbooks/switchover.yml -e target_leader=pg-node-2
 
 ### 튜닝을 "실행 중인" 클러스터에 적용하기
 
-`all.yml`의 프로파일·`max_connections`·**동기 복제 설정**을 바꾼 뒤, 이미 떠 있는 클러스터에
+`all/main.yml`의 프로파일·`max_connections`·**동기 복제 설정**을 바꾼 뒤, 이미 떠 있는 클러스터에
 반영하려면 `apply-tuning.yml`을 실행합니다. 이 플레이북은 `patronictl edit-config`로 etcd에
 값을 반영하고 Patroni가 즉시 reload 합니다.
 
 ```bash
-# all.yml 에 설정한 프로파일/값을 그대로 적용
+# all/main.yml 에 설정한 프로파일/값을 그대로 적용
 ansible-playbook playbooks/apply-tuning.yml
 
 # 한 번만 다른 값으로 적용해 보기 (명령행에서 덮어쓰기)
@@ -621,7 +655,7 @@ sudo -u postgres patroni --validate-config /etc/patroni/patroni.yml
 
 - **`shared_buffers`가 서버 RAM보다 크게 잡힌 경우** PostgreSQL이 아예 못 뜹니다. 9장의
   튜닝 프로파일을 서버 RAM에 맞게 낮추세요(`minimal`로 내려서 확인).
-- `bin_dir` 경로가 실제 설치 경로와 다른지 확인(`all.yml`의 `postgresql_bin_dir_*`).
+- `bin_dir` 경로가 실제 설치 경로와 다른지 확인(`all/main.yml`의 `postgresql_bin_dir_*`).
 - 데이터 디렉터리 권한이 `postgres:postgres` / `0700`인지 확인.
 
 ### 복제본이 따라오지 못한다 (Lag이 계속 커진다)
@@ -645,7 +679,7 @@ psql -U postgres -c "SELECT client_addr, state, sync_state, replay_lag FROM pg_s
 psql -U postgres -c "SELECT type, database, user_name, address, auth_method FROM pg_hba_file_rules;"
 ```
 
-- `all.yml`의 `postgresql_allowed_cidrs`에 클라이언트 대역을 추가하고
+- `all/main.yml`의 `postgresql_allowed_cidrs`에 클라이언트 대역을 추가하고
   `ansible-playbook site.yml --tags patroni`를 실행하면 재시작 없이 반영됩니다(9장 참고).
 - 비밀번호 인증 실패라면 `postgresql_auth_method`(기본 `scram-sha-256`)와 클라이언트
   드라이버가 SCRAM을 지원하는지 확인.
@@ -653,13 +687,13 @@ psql -U postgres -c "SELECT type, database, user_name, address, auth_method FROM
 ### VIP로 접속이 안 된다 / 페일오버 후 연결이 안 옮겨간다
 
 ```bash
-ip a | grep {{ '<VIP>' }}                          # VIP가 어느 노드에 붙어 있는지
+ip a | grep <VIP>                                # VIP가 어느 노드에 붙어 있는지
 systemctl status haproxy keepalived              # 두 서비스 상태
 curl -s http://127.0.0.1:7000/                   # HAProxy 통계 화면(텍스트)
 ```
 
 - VIP가 어느 노드에도 없으면 Keepalived 문제입니다 → `journalctl -u keepalived`.
-- `all.yml`의 `vip_interface`가 실제 NIC 이름과 같은지 확인(`ip a`).
+- `all/main.yml`의 `vip_interface`가 실제 NIC 이름과 같은지 확인(`ip a`).
 - HAProxy가 리더를 못 찾으면 Patroni REST(`8008`) 헬스체크 경로를 확인:
   `curl -s http://<노드>:8008/primary` (리더면 200).
 
@@ -712,10 +746,17 @@ SELECT count(*) AS conns, current_setting('max_connections') AS max FROM pg_stat
 
 마지막으로, 운영에 올리기 전 반드시 확인할 것들입니다.
 
-- `group_vars/all.yml`의 `ChangeMe_...` 비밀번호를 **모두** Vault 값으로 교체했는가?
-- `patroni.yml`의 `pg_hba` 규칙에서 `0.0.0.0/0`을 **실제 애플리케이션 IP 대역**으로
-  좁혔는가?
-- etcd, Patroni REST, 노드 간 복제 트래픽에 **TLS 적용**을 검토했는가?
+- `group_vars/all/main.yml`의 `ChangeMe_...` 비밀번호를 **모두** Vault 값으로
+  교체했는가? (DB 계정뿐 아니라 `patroni_restapi_password`, `haproxy_stats_password`,
+  `keepalived_auth_pass`도 포함)
+- Vault 파일을 **`group_vars/all/vault.yml`** 경로에 두었는가? (`group_vars/vault.yml`은
+  로드되지 않음 — 9장 (6) 참고)
+- `postgresql_allowed_cidrs`를 **실제 애플리케이션 IP 대역**으로 좁혔는가?
+- etcd, Patroni REST, 노드 간 복제 트래픽에 **TLS 적용**을 검토했는가? (이 플레이북은
+  아직 TLS를 자동 구성하지 않으므로, 최소한 DB 전용 내부망(VLAN)으로 격리하는 것을
+  권장합니다. etcd 접근 권한 = 클러스터 리더를 바꿀 수 있는 권한임을 기억하세요.)
+- 백업(`pgbackrest_enabled`)을 켰는가? 켰다면 **복원 훈련**까지 해 봤는가?
+  (백업은 복원해 본 적이 있어야 진짜 백업입니다)
 - `vault.yml`이 `.gitignore`에 의해 저장소에 올라가지 않는지 확인했는가?
 
 ---
@@ -724,14 +765,20 @@ SELECT count(*) AS conns, current_setting('max_connections') AS max FROM pg_stat
 
 ```
 .
+├── LICENSE                  # Apache License 2.0 전문
+├── NOTICE                   # 저작권 고지(배포 시 유지 필요)
 ├── ansible.cfg              # Ansible 기본 동작 설정
 ├── site.yml                 # 메인 플레이북(여기서 모든 역할을 순서대로 실행)
 ├── requirements.yml         # 필요한 Ansible 컬렉션 목록
+├── .github/workflows/
+│   └── lint.yml             # CI — yamllint · ansible-lint · syntax-check 자동 검사
 ├── inventory/
 │   └── hosts.yml            # 서버 목록과 그룹(토폴로지를 여기서 정의)
 ├── group_vars/
-│   ├── all.yml              # 전역 변수(버전·VIP·튜닝 프로파일·접근 IP·임시 비밀번호)
-│   └── vault.yml.example    # 운영용 비밀번호 템플릿(복사 후 암호화)
+│   ├── all/
+│   │   ├── main.yml         # 전역 변수(버전·VIP·튜닝 프로파일·접근 IP·임시 비밀번호)
+│   │   └── vault.yml        # (직접 생성) 운영 비밀번호 — 암호화 후 커밋 금지
+│   └── vault.yml.example    # 운영용 비밀번호 템플릿(all/vault.yml 로 복사 후 암호화)
 ├── playbooks/
 │   ├── cluster-status.yml   # 클러스터 상태 확인
 │   ├── switchover.yml       # 계획된 리더 전환
@@ -741,14 +788,16 @@ SELECT count(*) AS conns, current_setting('max_connections') AS max FROM pg_stat
 │       └── dynamic-tuning.yml.j2   # edit-config 로 넘길 동적 설정 패치
 ├── scripts/
 │   ├── airgap-build-bundle.sh  # 폐쇄망 설치 번들 빌드(인터넷 호스트에서)
-│   └── airgap-install.sh       # 폐쇄망 각 노드에 오프라인 설치
+│   ├── airgap-install.sh       # 폐쇄망 각 노드에 오프라인 설치
+│   └── publish-public.sh       # 내부 repo를 공개(OSS) repo로 안전하게 내보내기
 └── roles/
-    ├── common/              # 공통 기본 설정
+    ├── common/              # 공통 기본 설정(+ 방화벽 자동 개방)
     ├── etcd/                # etcd(공동 장부)
     ├── postgresql/          # PostgreSQL 바이너리 설치
-    ├── patroni/             # Patroni + 클러스터 부트스트랩
+    ├── patroni/             # Patroni + 클러스터 부트스트랩(+ 워치독)
+    ├── pgbackrest/          # (옵션) pgBackRest 백업 — pgbackrest_enabled=true
     ├── pgbouncer/           # 커넥션 풀러
-    └── haproxy/             # HAProxy + Keepalived(VIP)
+    └── haproxy/             # HAProxy + Keepalived(VIP) (+ SELinux 대응)
 ```
 
 여기까지 따라오셨다면, 이제 한 대가 죽어도 스스로 일어서는 PostgreSQL 클러스터를 손에
@@ -789,7 +838,7 @@ flowchart LR
 합니다(`postgresql16-server`, `pgbouncer` 등을 받기 위함).
 
 ```bash
-# 버전은 group_vars/all.yml 과 맞추세요(기본 PG16, etcd 3.5.16)
+# 버전은 group_vars/all/main.yml 과 맞추세요(기본 PG16, etcd 3.5.16)
 ./scripts/airgap-build-bundle.sh
 # 또는 버전 지정
 PG_VER=16 ETCD_VER=3.5.16 ./scripts/airgap-build-bundle.sh
@@ -799,7 +848,7 @@ PG_VER=16 ETCD_VER=3.5.16 ./scripts/airgap-build-bundle.sh
 
 1. **RPM** — 의존성까지(`--resolve --alldeps`) 모아 `createrepo_c`로 로컬 저장소 메타데이터 생성
 2. **pip wheel** — 컨트롤용(`ansible-core 2.15.x`)과 대상용(`patroni[etcd3]`,
-   `psycopg2-binary`, `python-etcd`)을 각각 다운로드 (RHEL 9/py3.9에서 받으므로 호환)
+   `psycopg2-binary`)을 각각 다운로드 (RHEL 9/py3.9에서 받으므로 호환)
 3. **etcd** 바이너리 tarball 다운로드
 4. **Ansible 컬렉션** (`community.general`·`community.postgresql`·`ansible.posix`) 다운로드
 5. 위 전체와 `airgap-install.sh`·매니페스트를 `patroni-airgap-bundle-*.tar.gz` 로 묶기
@@ -826,7 +875,7 @@ sudo ./airgap-install.sh --role target
 sudo ./airgap-install.sh --role both
 ```
 
-설치 스크립트는 각 노드에 다음을 배치합니다(경로는 `all.yml`의 `offline_*` 와 일치).
+설치 스크립트는 각 노드에 다음을 배치합니다(경로는 `all/main.yml`의 `offline_*` 와 일치).
 
 | 자원 | 위치 | 용도 |
 |------|------|------|
@@ -847,7 +896,7 @@ ansible all -m ping
 ansible-playbook site.yml -e offline_mode=true --ask-vault-pass
 ```
 
-> `offline_mode`를 매번 `-e`로 주기 번거롭다면 `group_vars/all.yml`에서
+> `offline_mode`를 매번 `-e`로 주기 번거롭다면 `group_vars/all/main.yml`에서
 > `offline_mode: true` 로 고정해도 됩니다. 그러면 `ansible-playbook site.yml` 만으로
 > 폐쇄망 설치가 진행됩니다.
 
@@ -861,3 +910,25 @@ ansible-playbook site.yml -e offline_mode=true --ask-vault-pass
 | postgresql | PGDG 저장소 RPM 추가 + 모듈 비활성화 | 건너뜀(로컬 저장소가 패키지 제공) |
 | etcd | GitHub에서 tarball 다운로드 | `offline_etcd_tarball` 로컬 파일 사용 |
 | patroni | PyPI에서 pip 설치 | `pip --no-index --find-links <wheelhouse>` |
+
+---
+
+## 라이센스
+
+이 프로젝트는 [Apache License 2.0](LICENSE)에 따라 배포됩니다.
+
+```
+Copyright 2026 Data Dynamics Inc
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+```

@@ -19,7 +19,9 @@
 
     - name: PGDG apt 저장소 추가
       ansible.builtin.apt_repository:
-        repo: "deb [signed-by=/usr/share/keyrings/postgresql.asc] http://apt.postgresql.org/pub/repos/apt {{ ansible_distribution_release }}-pgdg main"
+        repo: >-
+          deb [signed-by=/usr/share/keyrings/postgresql.asc]
+          http://apt.postgresql.org/pub/repos/apt {{ ansible_distribution_release }}-pgdg main
         state: present
         filename: pgdg
 
@@ -61,7 +63,9 @@
     # (필요한 postgresql 패키지는 로컬 번들 저장소가 제공).
     - name: (온라인) PGDG 저장소 RPM 설치
       ansible.builtin.dnf:
-        name: "https://download.postgresql.org/pub/repos/yum/reporpms/EL-{{ ansible_distribution_major_version }}-x86_64/pgdg-redhat-repo-latest.noarch.rpm"
+        name: >-
+          https://download.postgresql.org/pub/repos/yum/reporpms/EL-{{
+          ansible_distribution_major_version }}-x86_64/pgdg-redhat-repo-latest.noarch.rpm
         state: present
         disable_gpg_check: true
       when: not (offline_mode | bool)

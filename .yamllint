@@ -1,0 +1,21 @@
+---
+# yamllint 설정 — 한글 주석·설명이 많은 저장소 특성에 맞춰 일부 규칙 완화
+extends: default
+
+ignore: |
+  .github/
+
+rules:
+  line-length:
+    max: 140
+  comments:
+    min-spaces-from-content: 1
+  comments-indentation: disable
+  truthy:
+    allowed-values: ["true", "false"]
+    check-keys: false
+  braces:
+    max-spaces-inside: 1
+  octal-values:
+    forbid-implicit-octal: true
+    forbid-explicit-octal: true

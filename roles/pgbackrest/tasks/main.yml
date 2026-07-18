@@ -1,0 +1,87 @@
+---
+# =============================================================================
+# pgbackrest 역할 (옵션, pgbackrest_enabled=true 일 때만 실행)
+# -----------------------------------------------------------------------------
+# HA(이중화)는 백업을 대체하지 못합니다 — 실수로 지운 데이터는 복제본에도 즉시
+# 전파되기 때문입니다. 이 역할은 각 DB 노드에 pgBackRest 를 설치하고,
+# WAL 아카이빙과 "리더에서만 동작하는" 주기 백업 cron 을 구성합니다.
+#   - 일요일: full 백업 / 월~토: diff 백업 (첫 diff 는 자동으로 full 승격)
+#   - 리더가 아닌 노드의 cron 은 아무 일도 하지 않고 조용히 종료
+# =============================================================================
+
+- name: pgBackRest 설치 (Debian/Ubuntu)
+  ansible.builtin.apt:
+    name: pgbackrest
+    state: present
+    update_cache: true
+  when: ansible_os_family == 'Debian'
+
+- name: pgBackRest 설치 (RHEL/Rocky)
+  ansible.builtin.dnf:
+    name: pgbackrest
+    state: present
+    disablerepo: "{{ '*' if offline_mode | bool else omit }}"
+    enablerepo: "{{ offline_repo_name if offline_mode | bool else omit }}"
+  when: ansible_os_family == 'RedHat'
+
+- name: pgBackRest 디렉터리 생성 (설정/저장소/로그)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: "0750"
+  loop:
+    - /etc/pgbackrest
+    - "{{ pgbackrest_repo_path }}"
+    - /var/log/pgbackrest
+
+- name: pgbackrest.conf 배포
+  ansible.builtin.template:
+    src: pgbackrest.conf.j2
+    dest: /etc/pgbackrest/pgbackrest.conf
+    owner: postgres
+    group: postgres
+    mode: "0640"
+
+- name: 리더 전용 백업 래퍼 스크립트 배포
+  ansible.builtin.template:
+    src: pgbackrest-backup.sh.j2
+    dest: /usr/local/bin/pgbackrest-backup.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+# ----------------------------------------------------------------------------
+# 스탠자(stanza) 생성 — 백업 저장소 초기화. 리더에서 1회만 수행하면 됩니다.
+# (재실행해도 이미 있으면 그대로 통과하는 멱등 명령입니다)
+# ----------------------------------------------------------------------------
+- name: 이 노드가 리더인지 확인
+  ansible.builtin.uri:
+    url: "http://{{ node_ip }}:{{ patroni_rest_port }}/primary"
+    status_code: [200, 503]
+  register: pgbackrest_primary_check
+
+- name: 리더에서 pgBackRest 스탠자 생성
+  ansible.builtin.command: "pgbackrest --stanza={{ cluster_name }} stanza-create"
+  become: true
+  become_user: postgres
+  changed_when: false
+  when: pgbackrest_primary_check.status == 200
+
+# ----------------------------------------------------------------------------
+# 주기 백업 cron — 모든 DB 노드에 걸지만, 래퍼 스크립트가 리더에서만 실행합니다.
+# (페일오버로 리더가 바뀌어도 새 리더의 cron 이 자연스럽게 이어받습니다)
+# ----------------------------------------------------------------------------
+- name: 백업 cron 등록 (일요일 full / 평일 diff)
+  ansible.builtin.copy:
+    content: |
+      # {{ ansible_managed }}
+      # pgBackRest 백업 — 리더에서만 실제로 수행됨(래퍼 스크립트가 판단)
+      MAILTO=""
+      0 {{ pgbackrest_backup_hour }} * * 0   postgres /usr/local/bin/pgbackrest-backup.sh full
+      0 {{ pgbackrest_backup_hour }} * * 1-6 postgres /usr/local/bin/pgbackrest-backup.sh diff
+    dest: /etc/cron.d/pgbackrest
+    owner: root
+    group: root
+    mode: "0644"

@@ -2,16 +2,23 @@
 # =============================================================================
 # 운영용 비밀번호 템플릿
 # -----------------------------------------------------------------------------
-# 이 파일을 group_vars/vault.yml 로 복사한 뒤 실제 비밀번호로 채우고 암호화하세요.
-#   cp group_vars/vault.yml.example group_vars/vault.yml
-#   ansible-vault encrypt group_vars/vault.yml
+# 이 파일을 group_vars/all/vault.yml 로 복사한 뒤 실제 비밀번호로 채우고
+# 암호화하세요. (주의: group_vars/ 바로 아래가 아니라 반드시 all/ 안에 두어야
+# Ansible 이 자동으로 로드합니다 — group_vars/ 의 파일명은 "그룹 이름"과
+# 일치해야 하는데 vault 라는 그룹은 없기 때문입니다.)
+#
+#   cp group_vars/vault.yml.example group_vars/all/vault.yml
+#   ansible-vault encrypt group_vars/all/vault.yml
 # 실행 시:
 #   ansible-playbook site.yml --ask-vault-pass
 #
-# 아래 키들은 group_vars/all.yml 의 임시(ChangeMe_*) 비밀번호를 덮어씁니다.
+# 아래 키들은 group_vars/all/main.yml 의 임시(ChangeMe_*) 비밀번호를 덮어씁니다.
 # =============================================================================
 postgres_superuser_password:    "여기에_슈퍼유저_비밀번호"
 postgres_replication_password:  "여기에_복제계정_비밀번호"
 patroni_rewind_password:        "여기에_rewind계정_비밀번호"
 app_db_password:                "여기에_앱_비밀번호"
 pgbouncer_admin_password:       "여기에_pgbouncer관리자_비밀번호"
+patroni_restapi_password:       "여기에_patroni_REST_비밀번호"
+haproxy_stats_password:         "여기에_haproxy_통계화면_비밀번호"
+keepalived_auth_pass:           "8자이내"   # VRRP 인증은 앞 8자만 유효
