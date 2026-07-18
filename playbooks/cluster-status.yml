@@ -13,7 +13,7 @@
   gather_facts: false
   tasks:
     - name: patronictl list 실행
-      ansible.builtin.command: "patronictl -c {{ patroni_config_dir }}/patroni.yml list"
+      ansible.builtin.command: "{{ patroni_venv_dir }}/bin/patronictl -c {{ patroni_config_dir }}/patroni.yml list"
       register: patroni_list
       changed_when: false           # 조회만 하므로 변경 없음으로 표시
 

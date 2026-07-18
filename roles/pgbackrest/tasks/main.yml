@@ -75,8 +75,9 @@
 # ----------------------------------------------------------------------------
 - name: 백업 cron 등록 (일요일 full / 평일 diff)
   ansible.builtin.copy:
+    # 주의: ansible_managed 는 template 모듈 전용 변수라 copy content 에서는 미정의 오류가 난다.
     content: |
-      # {{ ansible_managed }}
+      # Managed by Ansible (patroni-postgresql-ha)
       # pgBackRest 백업 — 리더에서만 실제로 수행됨(래퍼 스크립트가 판단)
       MAILTO=""
       0 {{ pgbackrest_backup_hour }} * * 0   postgres /usr/local/bin/pgbackrest-backup.sh full

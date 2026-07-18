@@ -1,8 +1,8 @@
-# Patroni로 만드는 PostgreSQL 고가용성(HA) 클러스터
+# Patroni를 이용한 PostgreSQL 고가용성(HA) 클러스터
 
 이 문서는 데이터베이스 이중화를 처음 다뤄 보는 분도 끝까지 따라올 수 있도록, 개념부터
 실제 배포까지 차근차근 이야기하듯 풀어서 설명합니다. 명령어를 외우기보다 "왜 이렇게 하는가"를
-이해하는 데 초점을 맞췄습니다. 천천히 읽어 보시면 좋겠습니다.
+이해하는 데 초점을 맞췄습니다.
 
 ---
 
@@ -104,10 +104,10 @@ sequenceDiagram
 
 ---
 
-## 4. 왜 하필 Patroni를 추천하는가
+## 4. Patroni를 추천하는 이유
 
 PostgreSQL을 이중화하는 방법은 Patroni 말고도 여러 가지가 있습니다. 그런데도 이 프로젝트가
-Patroni를 고른 데에는 분명한 이유가 있습니다. 초보자 입장에서 중요한 것부터 풀어 보겠습니다.
+Patroni를 고른 데에는 분명한 이유가 있습니다.
 
 - **사람이 손대지 않아도 되는 진짜 자동 페일오버.**
   옛날 방식(예: `repmgr`를 수동으로 운용하거나, 직접 짠 스크립트)은 장애가 났을 때 결국
@@ -370,6 +370,9 @@ postgresql_allowed_cidrs:
 ansible-playbook site.yml --tags patroni
 ```
 
+> 반영은 즉시가 아니라 Patroni 의 다음 HA 루프에서 이루어집니다(기본 `loop_wait` 10초).
+> 실행 직후 접속 테스트가 거부되면 10여 초 기다렸다가 다시 확인하세요.
+
 ### (4) 튜닝 프로파일 — 규모에 맞는 `postgresql.conf`
 
 기본값(`postgresql.conf`)은 "프리사이즈 티셔츠"라 어떤 서버에도 딱 맞지 않습니다. 그래서
@@ -465,7 +468,7 @@ ansible-vault encrypt group_vars/all/vault.yml
 
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
-| `pgbackrest_enabled` | `false` | **백업.** HA는 백업을 대체하지 못합니다(실수로 지운 데이터는 복제본에도 즉시 전파). `true`면 pgBackRest를 설치하고 WAL 아카이빙 + 리더에서만 도는 주기 백업 cron(일요일 full, 평일 diff)을 구성합니다. 저장 위치는 `pgbackrest_repo_path`(기본 로컬 디스크 — 운영은 별도 디스크/NFS 권장). |
+| `pgbackrest_enabled` | `false` | **백업.** HA는 백업을 대체하지 못합니다(실수로 지운 데이터는 복제본에도 즉시 전파). `true`면 pgBackRest를 설치하고 WAL 아카이빙 + 리더에서만 도는 주기 백업 cron(일요일 full, 평일 diff)을 구성합니다. 저장 위치는 `pgbackrest_repo_path`(기본 로컬 디스크 — 운영은 별도 디스크/NFS 권장). ⚠️ RHEL 계열은 PGDG의 pgbackrest가 EPEL의 `libssh2`에 의존하므로 **EPEL 저장소가 필요**합니다(`dnf install epel-release` 또는 폐쇄망 번들에 포함). |
 | `patroni_watchdog_mode` | `automatic` | **워치독.** 리더 강등이 제때 안 되는 최악의 순간에 커널이 노드를 리셋해 split-brain을 한 번 더 막습니다. `automatic`은 장치가 없으면 경고만 남기므로 안전합니다. |
 | `haproxy_replica_fallback_to_primary` | `true` | 살아있는 복제본이 하나도 없을 때(예: 2노드에서 복제본 장애) 읽기 포트(5001)를 리더로 우회시켜 읽기 중단을 막습니다. |
 | `configure_firewall` | `true` | firewalld/ufw가 활성인 노드에서 역할에 맞는 포트를 자동 개방합니다(8장 참고). |

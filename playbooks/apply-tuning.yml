@@ -60,7 +60,7 @@
 
     - name: patronictl edit-config --apply 로 DCS 에 반영
       ansible.builtin.command: >
-        patronictl -c {{ patroni_config_dir }}/patroni.yml
+        {{ patroni_venv_dir }}/bin/patronictl -c {{ patroni_config_dir }}/patroni.yml
         edit-config {{ cluster_name }}
         --apply /tmp/patroni-dynamic-tuning.yml --force
       register: edit_out
@@ -76,7 +76,7 @@
         state: absent
 
     - name: 재시작 대기(pending restart) 상태 확인
-      ansible.builtin.command: "patronictl -c {{ patroni_config_dir }}/patroni.yml list"
+      ansible.builtin.command: "{{ patroni_venv_dir }}/bin/patronictl -c {{ patroni_config_dir }}/patroni.yml list"
       register: cluster_list
       changed_when: false
 

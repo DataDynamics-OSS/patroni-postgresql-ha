@@ -76,11 +76,14 @@
       changed_when: "'Disabling' in pg_module_disable.stdout"
       when: not (offline_mode | bool)
 
+    # postgresql_package_pin 이 설정되면 해당 "버전-릴리스" 빌드로 고정 설치한다.
+    # PGDG 최신 패키지는 최신 RHEL 마이너 기준으로 빌드되어(예: *.rhel9.8 은
+    # OpenSSL 3.4 요구) 오래된 마이너(예: 9.4)에서는 의존성 해결이 실패할 수 있다.
     - name: PostgreSQL 패키지 설치 (RHEL)
       ansible.builtin.dnf:
         name:
-          - "postgresql{{ postgresql_version }}-server"
-          - "postgresql{{ postgresql_version }}-contrib"
+          - "postgresql{{ postgresql_version }}-server{{ ('-' ~ postgresql_package_pin) if postgresql_package_pin else '' }}"
+          - "postgresql{{ postgresql_version }}-contrib{{ ('-' ~ postgresql_package_pin) if postgresql_package_pin else '' }}"
         state: present
         disablerepo: "{{ '*' if offline_mode | bool else omit }}"
         enablerepo: "{{ offline_repo_name if offline_mode | bool else omit }}"

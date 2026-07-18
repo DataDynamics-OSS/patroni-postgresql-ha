@@ -1,7 +1,10 @@
 ---
 # 설정/유닛 파일이 변경되면 호출되어 etcd 를 재시작합니다.
+# throttle: 1 — 이미 돌고 있는 클러스터의 재시작은 한 대씩(롤링) 수행해
+# 정족수를 잃지 않게 한다 (최초 병렬 부트스트랩과는 별개의 경로).
 - name: Restart etcd
   ansible.builtin.systemd:
     name: etcd
     state: restarted
     daemon_reload: true
+  throttle: 1

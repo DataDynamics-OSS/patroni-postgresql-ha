@@ -160,6 +160,10 @@
 # ----------------------------------------------------------------------------
 - name: 리더에서 애플리케이션 사용자/DB 생성
   when: patroni_is_leader | default(false)
+  # community.postgresql 모듈은 대상 노드 파이썬에 psycopg2 가 필요하다.
+  # 시스템 파이썬에는 없으므로, psycopg2 가 이미 설치된 Patroni venv 로 실행한다.
+  vars:
+    ansible_python_interpreter: "{{ patroni_venv_dir }}/bin/python"
   block:
     - name: ① 애플리케이션 사용자(role) 생성
       community.postgresql.postgresql_user:

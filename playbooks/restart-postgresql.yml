@@ -20,7 +20,7 @@
     only_pending: false                 # true 면 'pending restart' 표시된 노드만 재시작
   tasks:
     - name: 재시작 전 클러스터 상태
-      ansible.builtin.command: "patronictl -c {{ patroni_config_dir }}/patroni.yml list"
+      ansible.builtin.command: "{{ patroni_venv_dir }}/bin/patronictl -c {{ patroni_config_dir }}/patroni.yml list"
       register: before_list
       changed_when: false
 
@@ -31,7 +31,7 @@
     # 복제본을 먼저 재시작 → 리더는 계속 쓰기를 받으므로 영향 최소화
     - name: ① 복제본(replica) 재시작
       ansible.builtin.command: >
-        patronictl -c {{ patroni_config_dir }}/patroni.yml
+        {{ patroni_venv_dir }}/bin/patronictl -c {{ patroni_config_dir }}/patroni.yml
         restart {{ cluster_name }}
         --role replica --force
         {{ '--pending' if (only_pending | bool) else '' }}
@@ -45,7 +45,7 @@
     # 리더는 마지막에 재시작 (재시작 순간 짧은 쓰기 중단이 있을 수 있음)
     - name: ② 리더(leader) 재시작
       ansible.builtin.command: >
-        patronictl -c {{ patroni_config_dir }}/patroni.yml
+        {{ patroni_venv_dir }}/bin/patronictl -c {{ patroni_config_dir }}/patroni.yml
         restart {{ cluster_name }}
         --role leader --force
         {{ '--pending' if (only_pending | bool) else '' }}
@@ -57,7 +57,7 @@
         msg: "{{ restart_leader.stdout_lines | default([]) }}"
 
     - name: 재시작 후 클러스터 상태 확인
-      ansible.builtin.command: "patronictl -c {{ patroni_config_dir }}/patroni.yml list"
+      ansible.builtin.command: "{{ patroni_venv_dir }}/bin/patronictl -c {{ patroni_config_dir }}/patroni.yml list"
       register: after_list
       changed_when: false
 

@@ -19,10 +19,12 @@ auth_file = /etc/pgbouncer/userlist.txt
 admin_users = {{ pgbouncer_admin_user }}
 stats_users = {{ pgbouncer_admin_user }}
 
-; 풀링 동작 설정
-pool_mode = {{ pgbouncer_pool_mode }}                  ; 트랜잭션 단위 풀링
-max_client_conn = {{ pgbouncer_max_client_conn }}      ; 최대 클라이언트 연결 수
-default_pool_size = {{ pgbouncer_default_pool_size }}   ; DB당 서버 연결 수
+; 풀링 동작 설정 — PgBouncer 는 값 뒤 인라인 주석을 지원하지 않으므로
+; 주석은 반드시 별도 줄에 쓴다 (pool_mode: 트랜잭션 단위 풀링,
+; max_client_conn: 최대 클라이언트 연결 수, default_pool_size: DB당 서버 연결 수)
+pool_mode = {{ pgbouncer_pool_mode }}
+max_client_conn = {{ pgbouncer_max_client_conn }}
+default_pool_size = {{ pgbouncer_default_pool_size }}
 reserve_pool_size = 5
 reserve_pool_timeout = 3
 

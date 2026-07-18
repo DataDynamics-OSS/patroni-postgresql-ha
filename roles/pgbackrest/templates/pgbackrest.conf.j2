@@ -11,8 +11,11 @@ process-max={{ pgbackrest_process_max }}
 log-path=/var/log/pgbackrest
 log-level-console=info
 log-level-file=detail
-start-fast=y                      # 백업 시작 시 즉시 체크포인트(대기 시간 단축)
-compress-type=zst                 # 빠르고 효율적인 zstandard 압축
+# pgBackRest 는 값 뒤 인라인 주석을 지원하지 않으므로 주석은 별도 줄에 쓴다.
+# start-fast: 백업 시작 시 즉시 체크포인트(대기 시간 단축)
+# compress-type: 빠르고 효율적인 zstandard 압축
+start-fast=y
+compress-type=zst
 
 [{{ cluster_name }}]
 pg1-path={{ postgresql_data_dir }}

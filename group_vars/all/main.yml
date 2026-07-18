@@ -42,6 +42,9 @@ offline_etcd_tarball: "{{ offline_base_dir }}/etcd/etcd-v{{ etcd_version }}-linu
 
 # --- PostgreSQL -------------------------------------------------------------
 postgresql_version: "16"             # 14/15/17 등으로 변경 가능
+# PGDG 최신 빌드가 내 OS 마이너 버전과 호환되지 않을 때(의존성 오류) 특정
+# "버전-릴리스" 빌드로 고정. 빈 값이면 최신 사용. 예: "16.10-1PGDG.rhel9" (RHEL 전용)
+postgresql_package_pin: ""
 postgresql_port: 5432
 postgresql_data_dir: "/var/lib/postgresql/{{ postgresql_version }}/data"
 postgresql_bin_dir_deb: "/usr/lib/postgresql/{{ postgresql_version }}/bin"   # Debian 계열 경로
