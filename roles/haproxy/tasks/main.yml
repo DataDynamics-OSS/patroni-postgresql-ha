@@ -13,7 +13,7 @@
     name: haproxy
     state: present
     update_cache: true
-  when: ansible_os_family == 'Debian'
+  when: ansible_facts['os_family'] == 'Debian'
 
 - name: HAProxy 설치 (RHEL/Rocky)
   ansible.builtin.dnf:
@@ -21,15 +21,15 @@
     state: present
     disablerepo: "{{ '*' if offline_mode | bool else omit }}"
     enablerepo: "{{ offline_repo_name if offline_mode | bool else omit }}"
-  when: ansible_os_family == 'RedHat'
+  when: ansible_facts['os_family'] == 'RedHat'
 
 # SELinux 가 켜진 RHEL 에서는 HAProxy 가 비표준 포트(5000/5001 수신, 8008 헬스체크,
 # 6432 백엔드)로 연결하는 것이 기본 정책상 차단됩니다. 이 boolean 을 켜지 않으면
 # 백엔드가 전부 DOWN 으로 보이는 "조용한 장애"가 납니다.
 - name: SELinux 대응 (RHEL, SELinux 활성 시)
   when:
-    - ansible_os_family == 'RedHat'
-    - (ansible_selinux | default({})).status | default('disabled') == 'enabled'
+    - ansible_facts['os_family'] == 'RedHat'
+    - (ansible_facts['selinux'] | default({})).status | default('disabled') == 'enabled'
   block:
     - name: SELinux 정책 관리 도구 설치
       ansible.builtin.dnf:
@@ -67,7 +67,7 @@
   ansible.builtin.apt:
     name: keepalived
     state: present
-  when: ansible_os_family == 'Debian'
+  when: ansible_facts['os_family'] == 'Debian'
 
 - name: Keepalived 설치 (RHEL/Rocky)
   ansible.builtin.dnf:
@@ -75,7 +75,7 @@
     state: present
     disablerepo: "{{ '*' if offline_mode | bool else omit }}"
     enablerepo: "{{ offline_repo_name if offline_mode | bool else omit }}"
-  when: ansible_os_family == 'RedHat'
+  when: ansible_facts['os_family'] == 'RedHat'
 
 # HAProxy 가 아직 뜨기 전에도 VIP 를 바인딩할 수 있게 허용합니다.
 - name: VIP 의 non-local bind 허용 (sysctl)

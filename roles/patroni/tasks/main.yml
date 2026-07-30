@@ -32,7 +32,7 @@
 # postgresql 역할에서 set_fact 한 값은 다른 플레이에서 사라질 수 있어 다시 계산합니다.
 - name: PostgreSQL bin 디렉터리 경로 재설정(멱등)
   ansible.builtin.set_fact:
-    postgresql_bin_dir: "{{ postgresql_bin_dir_deb if ansible_os_family == 'Debian' else postgresql_bin_dir_rhel }}"
+    postgresql_bin_dir: "{{ postgresql_bin_dir_deb if ansible_facts['os_family'] == 'Debian' else postgresql_bin_dir_rhel }}"
 
 - name: Patroni 설정 디렉터리 생성
   ansible.builtin.file:

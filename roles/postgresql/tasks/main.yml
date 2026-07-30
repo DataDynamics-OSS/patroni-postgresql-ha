@@ -9,7 +9,7 @@
 # Debian / Ubuntu — PGDG(PostgreSQL 공식) apt 저장소 사용
 # ----------------------------------------------------------------------------
 - name: PostgreSQL 설치 (Debian/Ubuntu)
-  when: ansible_os_family == 'Debian'
+  when: ansible_facts['os_family'] == 'Debian'
   block:
     - name: PGDG apt 서명 키 추가
       ansible.builtin.get_url:
@@ -21,7 +21,7 @@
       ansible.builtin.apt_repository:
         repo: >-
           deb [signed-by=/usr/share/keyrings/postgresql.asc]
-          http://apt.postgresql.org/pub/repos/apt {{ ansible_distribution_release }}-pgdg main
+          http://apt.postgresql.org/pub/repos/apt {{ ansible_facts['distribution_release'] }}-pgdg main
         state: present
         filename: pgdg
 
@@ -51,13 +51,13 @@
 - name: PostgreSQL bin 디렉터리 경로 지정 (Debian)
   ansible.builtin.set_fact:
     postgresql_bin_dir: "{{ postgresql_bin_dir_deb }}"
-  when: ansible_os_family == 'Debian'
+  when: ansible_facts['os_family'] == 'Debian'
 
 # ----------------------------------------------------------------------------
 # RHEL / Rocky — PGDG dnf 저장소 사용
 # ----------------------------------------------------------------------------
 - name: PostgreSQL 설치 (RHEL/Rocky)
-  when: ansible_os_family == 'RedHat'
+  when: ansible_facts['os_family'] == 'RedHat'
   block:
     # 폐쇄망에서는 PGDG 인터넷 저장소 추가/모듈 비활성화를 건너뜁니다
     # (필요한 postgresql 패키지는 로컬 번들 저장소가 제공).
@@ -65,7 +65,7 @@
       ansible.builtin.dnf:
         name: >-
           https://download.postgresql.org/pub/repos/yum/reporpms/EL-{{
-          ansible_distribution_major_version }}-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+          ansible_facts['distribution_major_version'] }}-x86_64/pgdg-redhat-repo-latest.noarch.rpm
         state: present
         disable_gpg_check: true
       when: not (offline_mode | bool)
@@ -91,7 +91,7 @@
 - name: PostgreSQL bin 디렉터리 경로 지정 (RHEL)
   ansible.builtin.set_fact:
     postgresql_bin_dir: "{{ postgresql_bin_dir_rhel }}"
-  when: ansible_os_family == 'RedHat'
+  when: ansible_facts['os_family'] == 'RedHat'
 
 # ----------------------------------------------------------------------------
 # 공통 — 사용자 / 디렉터리 준비
@@ -120,4 +120,4 @@
     owner: postgres
     group: postgres
     mode: "0644"
-  when: ansible_os_family == 'Debian'
+  when: ansible_facts['os_family'] == 'Debian'

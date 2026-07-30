@@ -6,12 +6,12 @@
 
 - name: OS 패키지 계열 판별(Debian/RedHat)
   ansible.builtin.set_fact:
-    is_debian: "{{ ansible_os_family == 'Debian' }}"
-    is_redhat: "{{ ansible_os_family == 'RedHat' }}"
+    is_debian: "{{ ansible_facts['os_family'] == 'Debian' }}"
+    is_redhat: "{{ ansible_facts['os_family'] == 'RedHat' }}"
 
-- name: 시간대를 UTC 로 설정
+- name: 시간대 설정 ({{ system_timezone }})
   community.general.timezone:
-    name: UTC
+    name: "{{ system_timezone }}"
 
 - name: 기본 패키지 설치 (Debian/Ubuntu)
   ansible.builtin.apt:

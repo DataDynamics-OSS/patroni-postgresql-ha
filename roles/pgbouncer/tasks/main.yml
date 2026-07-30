@@ -10,7 +10,7 @@
     name: pgbouncer
     state: present
     update_cache: true
-  when: ansible_os_family == 'Debian'
+  when: ansible_facts['os_family'] == 'Debian'
 
 - name: PgBouncer 설치 (RHEL/Rocky)
   ansible.builtin.dnf:
@@ -18,14 +18,14 @@
     state: present
     disablerepo: "{{ '*' if offline_mode | bool else omit }}"
     enablerepo: "{{ offline_repo_name if offline_mode | bool else omit }}"
-  when: ansible_os_family == 'RedHat'
+  when: ansible_facts['os_family'] == 'RedHat'
 
 # 패키지가 사용하는 서비스 계정이 배포판마다 다릅니다:
 #   Debian 계열 → postgres 로 실행,  RHEL(PGDG) → 전용 pgbouncer 계정으로 실행.
 # 설정 파일 소유자를 서비스 계정과 맞추지 않으면 RHEL 에서 기동에 실패합니다.
 - name: PgBouncer 서비스 계정 결정
   ansible.builtin.set_fact:
-    pgbouncer_user: "{{ 'postgres' if ansible_os_family == 'Debian' else 'pgbouncer' }}"
+    pgbouncer_user: "{{ 'postgres' if ansible_facts['os_family'] == 'Debian' else 'pgbouncer' }}"
 
 - name: PgBouncer 설정 디렉터리 생성
   ansible.builtin.file:

@@ -14,6 +14,11 @@
 # --- 클러스터 식별자 --------------------------------------------------------
 cluster_name: pg-ha-cluster          # Patroni scope 이름(같은 etcd 안에서 고유해야 함)
 
+# --- 시스템 시간대 ----------------------------------------------------------
+# 모든 노드에 동일하게 적용됩니다(로그 시각 비교를 위해 반드시 통일).
+# 해외 팀과 로그를 공유하는 등 UTC 가 필요하면 "UTC" 로 바꾸세요.
+system_timezone: Asia/Seoul
+
 # --- 가상 IP(VIP, Keepalived 가 관리) ---------------------------------------
 # 애플리케이션은 이 VIP 로만 접속합니다. VIP 를 가진 노드의 HAProxy 가 트래픽을 라우팅.
 cluster_vip: 10.0.0.10               # 아직 아무도 쓰지 않는 여유 IP 를 지정
@@ -43,7 +48,26 @@ offline_etcd_tarball: "{{ offline_base_dir }}/etcd/etcd-v{{ etcd_version }}-linu
 # --- PostgreSQL -------------------------------------------------------------
 postgresql_version: "16"             # 14/15/17 등으로 변경 가능
 # PGDG 최신 빌드가 내 OS 마이너 버전과 호환되지 않을 때(의존성 오류) 특정
-# "버전-릴리스" 빌드로 고정. 빈 값이면 최신 사용. 예: "16.10-1PGDG.rhel9" (RHEL 전용)
+# "버전-릴리스" 빌드로 고정. 빈 값이면 최신 사용. (RHEL 전용)
+#
+# [증상] dnf 가 이런 오류를 냅니다:
+#   nothing provides libcrypto.so.3(OPENSSL_3.4.0)(64bit) needed by
+#   postgresql16-contrib-16.14-2PGDG.rhel9.8.x86_64
+# [원인] PGDG 최신 빌드는 최신 RHEL 마이너(예: 9.8, OpenSSL 3.4) 기준으로 빌드되는데
+#   구형 마이너(예: 9.4 는 openssl-libs 3.0.7)는 그 심볼을 제공하지 않습니다.
+# [해결] 내 OS 에서 depsolve 되는 최신 빌드를 찾아 아래에 지정합니다.
+#   1) 후보 나열:  dnf --showduplicates list available postgresql16-server
+#   2) 의존 심볼 확인:
+#        dnf repoquery --requires postgresql16-contrib-<버전> | grep crypto
+#      → OPENSSL_3.0.0 만 나오면 구형 마이너에서도 안전합니다.
+#   3) 전체 해결 확인(부수 의존 포함):
+#        dnf --assumeno install postgresql16-server-<버전> postgresql16-contrib-<버전>
+#      → "Operation aborted." 가 나오면 의존성 해결 성공입니다.
+#
+# 주의: 패키지 이름의 접미사만 보고 고르면 안 됩니다. 양방향으로 어긋납니다 —
+#   마이너 표기가 없는 16.11-1PGDG.rhel9 는 contrib 가 OpenSSL 3.4 를 요구하고,
+#   반대로 16.14-1PGDG.rhel9.6 은 9.6 빌드지만 3.0 심볼만 사용합니다.
+#   반드시 위 2)·3) 으로 확인하세요. (RHEL 9.4 검증 예: "16.14-1PGDG.rhel9.6")
 postgresql_package_pin: ""
 postgresql_port: 5432
 postgresql_data_dir: "/var/lib/postgresql/{{ postgresql_version }}/data"

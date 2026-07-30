@@ -14,7 +14,7 @@
     name: pgbackrest
     state: present
     update_cache: true
-  when: ansible_os_family == 'Debian'
+  when: ansible_facts['os_family'] == 'Debian'
 
 - name: pgBackRest 설치 (RHEL/Rocky)
   ansible.builtin.dnf:
@@ -22,7 +22,7 @@
     state: present
     disablerepo: "{{ '*' if offline_mode | bool else omit }}"
     enablerepo: "{{ offline_repo_name if offline_mode | bool else omit }}"
-  when: ansible_os_family == 'RedHat'
+  when: ansible_facts['os_family'] == 'RedHat'
 
 - name: pgBackRest 디렉터리 생성 (설정/저장소/로그)
   ansible.builtin.file:
