@@ -11,3 +11,8 @@ fact_cache/
 
 # 내부→공개 repo 발행 스크립트 (공개 repo로 나가면 안 됨)
 scripts/publish-public.sh
+
+# 폐쇄망 번들 빌드 산출물 (수백 MB — 릴리즈 자산으로 별도 배포)
+airgap-out/
+airgap-bundle/
+patroni-airgap-*.tar.gz

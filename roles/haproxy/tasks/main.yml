@@ -19,7 +19,7 @@
   ansible.builtin.dnf:
     name: haproxy
     state: present
-    disablerepo: "{{ '*' if offline_mode | bool else omit }}"
+    disablerepo: "{{ '*' if (offline_mode | bool and offline_repo_exclusive | bool) else omit }}"
     enablerepo: "{{ offline_repo_name if offline_mode | bool else omit }}"
   when: ansible_facts['os_family'] == 'RedHat'
 
@@ -35,7 +35,7 @@
       ansible.builtin.dnf:
         name: python3-libsemanage
         state: present
-        disablerepo: "{{ '*' if offline_mode | bool else omit }}"
+        disablerepo: "{{ '*' if (offline_mode | bool and offline_repo_exclusive | bool) else omit }}"
         enablerepo: "{{ offline_repo_name if offline_mode | bool else omit }}"
 
     - name: HAProxy 의 임의 포트 연결 허용 (haproxy_connect_any)
@@ -73,7 +73,7 @@
   ansible.builtin.dnf:
     name: keepalived
     state: present
-    disablerepo: "{{ '*' if offline_mode | bool else omit }}"
+    disablerepo: "{{ '*' if (offline_mode | bool and offline_repo_exclusive | bool) else omit }}"
     enablerepo: "{{ offline_repo_name if offline_mode | bool else omit }}"
   when: ansible_facts['os_family'] == 'RedHat'
 

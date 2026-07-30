@@ -85,7 +85,7 @@
           - "postgresql{{ postgresql_version }}-server{{ ('-' ~ postgresql_package_pin) if postgresql_package_pin else '' }}"
           - "postgresql{{ postgresql_version }}-contrib{{ ('-' ~ postgresql_package_pin) if postgresql_package_pin else '' }}"
         state: present
-        disablerepo: "{{ '*' if offline_mode | bool else omit }}"
+        disablerepo: "{{ '*' if (offline_mode | bool and offline_repo_exclusive | bool) else omit }}"
         enablerepo: "{{ offline_repo_name if offline_mode | bool else omit }}"
 
 - name: PostgreSQL bin 디렉터리 경로 지정 (RHEL)

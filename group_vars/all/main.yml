@@ -41,6 +41,14 @@ configure_firewall: true
 # (RHEL 9 / Python 3.9 기준. scripts/README 또는 14장 참고)
 offline_mode: false
 offline_repo_name: patroni-airgap
+
+# 번들 프로파일에 맞춰 반드시 선택해야 하는 값입니다.
+#   true  (기본) — full 번들용. 설치 시 다른 dnf 저장소를 전부 끄고(disablerepo='*')
+#                  번들 저장소만 사용합니다. OS 미러조차 없는 완전 폐쇄망 전제.
+#   false        — delta 번들용. 번들 저장소를 "추가"만 하고 기존 BaseOS/AppStream
+#                  미러를 그대로 씁니다. 사내에 RHEL 미러가 이미 있는 환경용.
+#                  (delta 번들에는 base 의존성이 없으므로 true 로 두면 설치가 실패합니다)
+offline_repo_exclusive: true
 offline_base_dir: /opt/patroni-airgap
 offline_wheelhouse: "{{ offline_base_dir }}/wheels"
 offline_etcd_tarball: "{{ offline_base_dir }}/etcd/etcd-v{{ etcd_version }}-linux-amd64.tar.gz"

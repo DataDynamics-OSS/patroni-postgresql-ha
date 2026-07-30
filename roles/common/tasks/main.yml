@@ -38,7 +38,7 @@
       - chrony
     state: present
     # 폐쇄망: 시스템 저장소를 모두 끄고 로컬 번들 저장소만 사용
-    disablerepo: "{{ '*' if offline_mode | bool else omit }}"
+    disablerepo: "{{ '*' if (offline_mode | bool and offline_repo_exclusive | bool) else omit }}"
     enablerepo: "{{ offline_repo_name if offline_mode | bool else omit }}"
   when: is_redhat
 

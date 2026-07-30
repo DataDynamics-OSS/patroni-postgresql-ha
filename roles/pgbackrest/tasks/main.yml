@@ -20,7 +20,7 @@
   ansible.builtin.dnf:
     name: pgbackrest
     state: present
-    disablerepo: "{{ '*' if offline_mode | bool else omit }}"
+    disablerepo: "{{ '*' if (offline_mode | bool and offline_repo_exclusive | bool) else omit }}"
     enablerepo: "{{ offline_repo_name if offline_mode | bool else omit }}"
   when: ansible_facts['os_family'] == 'RedHat'
 

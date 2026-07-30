@@ -50,6 +50,26 @@ for d in rpms wheels collections etcd; do
   [[ -d "${BUNDLE_DIR}/${d}" ]] || { echo "오류: 번들에 ${d}/ 가 없습니다 (${BUNDLE_DIR})"; exit 1; }
 done
 
+# 번들 프로파일(full/delta) 확인 — 설치 시 지정할 변수가 달라진다.
+PROFILE="$(awk -F': *' '/^profile /{print $2}' "${BUNDLE_DIR}/MANIFEST.txt" 2>/dev/null | awk '{print $1}')"
+PROFILE="${PROFILE:-unknown}"
+if [[ "${PROFILE}" == "delta" ]]; then
+  REPO_EXCLUSIVE="false"
+  echo "    프로파일: delta — 대상에 RHEL BaseOS/AppStream 미러가 있어야 합니다."
+  echo "    (번들에는 PGDG 유래 패키지만 있습니다)"
+else
+  REPO_EXCLUSIVE="true"
+  echo "    프로파일: ${PROFILE}"
+fi
+
+# 무결성 검증 (번들에 SHA256SUMS 가 있으면)
+if [[ -f "${BUNDLE_DIR}/SHA256SUMS" ]]; then
+  echo "==> 번들 무결성 검증 (SHA256SUMS)"
+  ( cd "${BUNDLE_DIR}" && sha256sum --quiet -c SHA256SUMS ) \
+    || { echo "오류: 번들이 손상되었습니다(체크섬 불일치)."; exit 1; }
+  echo "    OK"
+fi
+
 # ----------------------------------------------------------------------------
 # 공통) 로컬 dnf 저장소 설정 (대상/both 에서 패키지 설치에 사용)
 # ----------------------------------------------------------------------------

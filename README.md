@@ -840,21 +840,58 @@ flowchart LR
 빌드 호스트에는 BaseOS/AppStream, **EPEL**, **PGDG**(PostgreSQL) 저장소가 활성화되어 있어야
 합니다(`postgresql16-server`, `pgbouncer` 등을 받기 위함).
 
+> **빌드 호스트는 대상과 같은 RHEL 마이너 버전이어야 합니다.** 9.4 대상이면 9.4 에서
+> 빌드하세요. 상위 마이너(9.8 등)에서 빌드하면 base 패키지가 대상보다 높은 버전으로
+> 섞여, 설치 시 불필요한 대량 업그레이드가 일어나거나 의존성이 어긋납니다.
+
 ```bash
 # 버전은 group_vars/all/main.yml 과 맞추세요(기본 PG16, etcd 3.5.16)
-./scripts/airgap-build-bundle.sh
-# 또는 버전 지정
-PG_VER=16 ETCD_VER=3.5.16 ./scripts/airgap-build-bundle.sh
+./scripts/airgap-build-bundle.sh                    # full + delta 둘 다 생성
+
+# RHEL 9.4 대상 예시 — PostgreSQL 핀을 반드시 지정
+PG_PIN=16.14-1PGDG.rhel9.6 ./scripts/airgap-build-bundle.sh
+
+PROFILE=delta ./scripts/airgap-build-bundle.sh      # 한쪽만
+WITH_PGBACKREST=1 ./scripts/airgap-build-bundle.sh  # pgBackRest 포함(EPEL 필요)
 ```
+
+**두 가지 프로파일이 나옵니다.** 환경에 맞는 쪽을 고르세요.
+
+| 프로파일 | 내용 | 언제 | 설치 시 변수 |
+|---|---|---|---|
+| **full** | 의존성 전체 폐쇄(OS 패키지 포함) | RHEL 미러조차 없는 완전 폐쇄망 | `offline_repo_exclusive: true` (기본) |
+| **delta** | 번들에만 있는 것(PGDG/EPEL 유래)만 | 사내에 RHEL BaseOS/AppStream 미러가 이미 있음 | `offline_repo_exclusive: false` |
+
+RHEL 9.4 / PG16 기준 실측은 full 이 **RPM 200개·127 MB**, delta 가 **RPM 7개·48 MB** 입니다
+(양쪽 모두 wheel·etcd·컬렉션 포함). delta 를 `offline_repo_exclusive: true` 로 설치하면
+`haproxy`·`keepalived`·`chrony` 를 찾지 못해 실패하니 반드시 `false` 로 두세요.
+
+**꼭 지정해야 하는 두 변수**가 있습니다. 폐쇄망에서는 설치 시점에 되돌릴 수 없어서,
+잘못 만들면 번들 전체를 다시 만들어야 합니다.
+
+- `PG_PIN` — PGDG 최신 빌드는 최신 RHEL 마이너 기준으로 빌드됩니다. 예를 들어
+  `16.14-2PGDG.rhel9.8` 은 OpenSSL 3.4 를 요구해서 RHEL 9.4(OpenSSL 3.0)에서는
+  설치되지 않습니다. 대상에서 설치 가능한 빌드를 찾아 지정하세요(선정 절차는
+  `group_vars/all/main.yml` 의 `postgresql_package_pin` 주석 참조).
+- `VENV_PY` — 대상 노드의 `python3` 와 **같은 버전**이어야 합니다(RHEL 9 기본은 3.9).
+  wheel 의 ABI 태그(`cp39`/`cp311`)를 결정하기 때문입니다. 빌드 호스트에 3.11 이 깔려
+  있고 `python3` 가 그것을 가리키면 `cp311` wheel 이 담겨, 폐쇄망에서
+  "no matching distribution" 으로 설치가 실패합니다. 스크립트가 빌드 마지막에 ABI 태그를
+  자동 검증하고 불일치 시 중단합니다.
 
 스크립트가 하는 일:
 
-1. **RPM** — 의존성까지(`--resolve --alldeps`) 모아 `createrepo_c`로 로컬 저장소 메타데이터 생성
-2. **pip wheel** — 컨트롤용(`ansible-core 2.15.x`)과 대상용(`patroni[etcd3]`,
-   `psycopg2-binary`)을 각각 다운로드 (RHEL 9/py3.9에서 받으므로 호환)
-3. **etcd** 바이너리 tarball 다운로드
-4. **Ansible 컬렉션** (`community.general`·`community.postgresql`·`ansible.posix`) 다운로드
-5. 위 전체와 `airgap-install.sh`·매니페스트를 `patroni-airgap-bundle-*.tar.gz` 로 묶기
+1. **RPM** — 의존성까지(`--resolve --alldeps`) 모아 `createrepo_c`로 로컬 저장소 메타데이터 생성.
+   `--alldeps` 를 쓰는 이유는, 이것이 없으면 "빌드 호스트에 이미 설치된" 의존성이
+   누락되어 clean 한 대상에서 설치가 깨지기 때문입니다.
+2. **delta 산출** — 각 패키지의 `%{reponame}` 을 조회해 PGDG/EPEL 유래가 아닌 것(=대상의
+   OS 미러가 제공하는 것)을 제외
+3. **pip wheel** — 컨트롤용(`ansible-core 2.15.x`)과 대상용(`patroni[etcd3]`,
+   `psycopg2-binary`)을 `VENV_PY` 로 다운로드 후 ABI 태그 검증
+4. **etcd** 바이너리 tarball 다운로드
+5. **Ansible 컬렉션** (`community.general`·`community.postgresql`·`ansible.posix`) 다운로드
+6. 위 전체와 `airgap-install.sh`·`MANIFEST.txt`·`SHA256SUMS` 를
+   `patroni-airgap-{full,delta}-pg16-<날짜>.tar.gz` 로 묶기
 
 ### 2단계 — 번들 옮기기
 
@@ -896,12 +933,22 @@ sudo ./airgap-install.sh --role both
 ```bash
 source /opt/patroni-airgap/venv/bin/activate
 ansible all -m ping
-ansible-playbook site.yml -e offline_mode=true --ask-vault-pass
+
+# full 번들 (기본값이므로 offline_repo_exclusive 는 생략 가능)
+ansible-playbook site.yml -e offline_mode=true \
+  -e postgresql_package_pin=16.14-1PGDG.rhel9.6 --ask-vault-pass
+
+# delta 번들 — OS 미러를 함께 써야 하므로 exclusive 를 반드시 끈다
+ansible-playbook site.yml -e offline_mode=true -e offline_repo_exclusive=false \
+  -e postgresql_package_pin=16.14-1PGDG.rhel9.6 --ask-vault-pass
 ```
 
-> `offline_mode`를 매번 `-e`로 주기 번거롭다면 `group_vars/all/main.yml`에서
-> `offline_mode: true` 로 고정해도 됩니다. 그러면 `ansible-playbook site.yml` 만으로
-> 폐쇄망 설치가 진행됩니다.
+지정할 값은 번들의 `MANIFEST.txt` 맨 아래 **[설치 시 반드시 지정할 변수]** 항목에
+그대로 적혀 있습니다.
+
+> `-e` 로 매번 주기 번거롭다면 `group_vars/all/main.yml` 에서 `offline_mode: true`,
+> `offline_repo_exclusive`, `postgresql_package_pin` 을 고정해도 됩니다. 그러면
+> `ansible-playbook site.yml` 만으로 폐쇄망 설치가 진행됩니다.
 
 ### 동작 원리 요약
 
