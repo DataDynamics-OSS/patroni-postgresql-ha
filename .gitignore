@@ -1,6 +1,12 @@
 # Secrets — never commit decrypted vault
 group_vars/all/vault.yml
 group_vars/vault.yml
+
+# 실제 환경 전용 설정 — 저장소 기본값은 문서용 예시만 유지하고,
+# 내 환경의 IP/인터페이스/패키지 고정은 아래 파일로 분리한다(공개 repo 유출 방지).
+inventory/lab.yml
+inventory/*.local.yml
+group_vars/all/zz-*.yml
 *.retry
 *.vault-pass
 .vault_pass.txt

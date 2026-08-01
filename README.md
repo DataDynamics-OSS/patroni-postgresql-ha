@@ -444,15 +444,23 @@ patroni_synchronous_node_count: 1       # 동기적으로 확인받을 standby �
 이미 떠 있는 클러스터에 동기 복제를 켜고 끄는 것은 **재시작 없이** 가능합니다(13장의
 `apply-tuning.yml`이 이 설정도 함께 반영합니다).
 
-### (6) 비밀번호 — 반드시 Vault로 암호화
+### (6) 비밀번호 — 실제 값으로 교체하기
 
-`all/main.yml`에는 `ChangeMe_...` 형태의 임시 비밀번호가 들어 있습니다. **운영 환경에서는
-반드시** 아래처럼 Vault로 암호화한 실제 비밀번호로 교체하세요.
+`all/main.yml`에는 `ChangeMe_...` 형태의 임시 비밀번호가 들어 있습니다. **운영에 올리기
+전에 반드시 실제 값으로 교체**하세요. 교체하는 방법은 세 가지이고, 어느 쪽이든 배포
+결과는 같습니다. Vault는 **선택 사항**이며 플레이북이 강제하지 않습니다.
+
+| 방식 | 비밀번호 보관 위치 | 실행 명령 | 언제 쓰나 |
+|------|--------------------|-----------|-----------|
+| **A. Vault 암호화** | `all/vault.yml`(암호화) | `--ask-vault-pass` 필요 | 저장소를 여러 명이 공유 |
+| **B. Vault 없이** | `all/vault.yml`(평문, git 제외) | 옵션 없음 | 혼자/소수 운영 — **가장 간단** |
+| **C. Vault + 암호 파일** | `all/vault.yml`(암호화) | 옵션 없음 | 암호화는 하되 입력은 생략 |
+
+먼저 세 방식 모두 공통으로 템플릿을 복사합니다.
 
 ```bash
 cp group_vars/vault.yml.example group_vars/all/vault.yml
-# 편집기로 vault.yml 의 값들을 실제 비밀번호로 수정한 뒤
-ansible-vault encrypt group_vars/all/vault.yml
+# 편집기로 vault.yml 의 값들을 실제 비밀번호로 수정
 ```
 
 > ⚠️ 복사 위치는 `group_vars/` 바로 아래가 아니라 **반드시 `group_vars/all/` 안**이어야
@@ -460,6 +468,60 @@ ansible-vault encrypt group_vars/all/vault.yml
 > 그룹은 없으므로, `group_vars/vault.yml`에 두면 **에러 없이 조용히 무시**되어 임시
 > 비밀번호가 그대로 배포됩니다. `group_vars/all/` 디렉터리 안의 파일은 전부 자동
 > 로드되므로 `all/vault.yml`이 `all/main.yml`의 값을 안전하게 덮어씁니다.
+> 이 주의사항은 A·B·C 모두에 해당합니다.
+
+#### A. Vault로 암호화하기
+
+```bash
+ansible-vault encrypt group_vars/all/vault.yml   # 여기서 Vault 암호를 정함
+ansible-playbook site.yml --ask-vault-pass       # 실행할 때마다 그 암호를 입력
+```
+
+여기서 입력하는 **Vault 암호는 파일을 여는 열쇠일 뿐**, 어떤 서비스의 로그인 비밀번호도
+아닙니다. DB·HAProxy 등에 실제로 쓰이는 값은 `vault.yml` 안에 적은 값입니다.
+
+#### B. Vault를 쓰지 않고 배포하기
+
+`all/vault.yml`을 **암호화하지 않고 평문 그대로** 두면 됩니다. Ansible은 이 파일을
+암호화 여부와 무관하게 읽으므로 `--ask-vault-pass` 없이 그냥 실행됩니다.
+
+```bash
+# encrypt 하지 않고 바로 배포
+ansible-playbook site.yml
+```
+
+`group_vars/all/vault.yml`은 `.gitignore`에 등록되어 있어 이 상태로도 저장소에는
+올라가지 않습니다. **파일 이름은 반드시 `vault.yml` 그대로 두세요** — 다른 이름으로
+바꾸면 `.gitignore`에 걸리지 않아 비밀번호가 커밋될 수 있습니다.
+
+> `all/main.yml`의 `ChangeMe_...` 값을 직접 고쳐도 동작하지만, 이 파일은 git 추적
+> 대상이라 비밀번호가 저장소에 그대로 남습니다. 폐기해도 되는 테스트 환경이 아니라면
+> 권장하지 않습니다.
+
+#### C. 암호화는 유지하되 입력만 생략하기
+
+암호화의 이점은 지키면서 매번 암호를 입력하는 번거로움만 없애려면, Vault 암호를 파일에
+두고 `ansible.cfg`가 그 파일을 읽게 하면 됩니다.
+
+```bash
+ansible-vault encrypt group_vars/all/vault.yml
+echo 'Vault암호' > .vault_pass.txt
+chmod 600 .vault_pass.txt
+```
+
+`ansible.cfg`의 `[defaults]` 섹션에 한 줄 추가합니다.
+
+```ini
+vault_password_file = .vault_pass.txt
+```
+
+이후에는 `ansible-playbook site.yml`만으로 실행됩니다. `.vault_pass.txt`와 `*.vault-pass`
+역시 `.gitignore`에 등록되어 있습니다.
+
+> **어느 방식이든 대상 서버에는 평문으로 배포됩니다.** 비밀번호는 `/etc/patroni/patroni.yml`,
+> `/etc/pgbouncer/userlist.txt`, `/etc/haproxy/haproxy.cfg`, `keepalived.conf`에 평문으로
+> 렌더링됩니다. Vault는 "저장소(git)에 비밀번호를 남기지 않기 위한 장치"이지 서버 측
+> 암호화가 아닙니다. 서버 쪽 보호는 파일 권한과 접근 통제로 해야 합니다.
 
 ### (7) 그 밖의 운영 옵션 — 백업·워치독·읽기 폴백
 
@@ -485,13 +547,51 @@ ansible-vault encrypt group_vars/all/vault.yml
 
 이제 준비가 끝났습니다. 배포는 명령어 한 줄입니다.
 
+> 명령어가 헷갈리면 `./help.sh`를 실행하세요. 주제별(`deploy` `verify` `ops` `tuning`
+> `vault` `inventory` `airgap` `troubleshoot`)로 자주 쓰는 명령과 현재 설정 요약을
+> 보여 줍니다. 예: `./help.sh deploy`, `./help.sh all`
+
 ```bash
 # 먼저 서버들과 연결이 되는지 확인
 ansible all -m ping
 
-# 전체 클러스터 배포 (Vault를 썼다면 --ask-vault-pass)
+# 전체 클러스터 배포
+ansible-playbook site.yml
+
+# Vault로 암호화했다면(9장 (6) A 방식) 암호를 물어보도록 옵션을 붙입니다
 ansible-playbook site.yml --ask-vault-pass
 ```
+
+> `--ask-vault-pass`는 `all/vault.yml`을 `ansible-vault encrypt`로 암호화한 경우에만
+> 필요합니다. 평문으로 두었거나 `ansible.cfg`에 `vault_password_file`을 지정했다면
+> 옵션 없이 실행하세요.
+
+### 저장소 기본값과 내 환경을 분리하고 싶다면
+
+`inventory/hosts.yml`과 `group_vars/all/main.yml`의 IP·인터페이스는 **문서용 예시**입니다.
+저장소를 고쳐 쓰는 대신 환경 전용 파일로 분리하면, 이후 `git pull`로 업데이트를 받을 때
+충돌이 생기지 않고 실제 인프라 주소가 저장소에 섞여 들어가지도 않습니다.
+
+```bash
+# 1) 환경 전용 인벤토리 (예: 사내 랩)
+cp inventory/hosts.yml inventory/lab.yml     # 노드 IP를 실제 값으로 수정
+
+# 2) 환경 전용 변수 override — group_vars/all/ 은 파일명 알파벳 순으로 로드되며
+#    뒤 파일이 앞을 덮으므로, main.yml 보다 뒤에 오도록 zz- 접두사를 씁니다
+cat > group_vars/all/zz-lab.yml <<'EOF'
+cluster_vip: 10.10.0.50
+vip_interface: ens192
+postgresql_allowed_cidrs:
+  - 127.0.0.1/32
+  - 10.10.0.0/24
+EOF
+
+# 3) 배포
+ansible-playbook -i inventory/lab.yml site.yml
+```
+
+두 파일 모두 `.gitignore`에 등록해 두면 실수로 커밋되지 않습니다. `./help.sh`는
+`inventory/lab.yml`이 있으면 자동으로 그것을 기준으로 명령을 안내합니다.
 
 배포는 다음 순서로 자동 진행됩니다. 각 단계는 태그가 붙어 있어 일부만 다시 실행할 수도
 있습니다.
@@ -519,8 +619,51 @@ ansible-playbook site.yml --limit pg-node-2      # 특정 노드만
 
 ## 11. 잘 됐는지 확인하기
 
-배포가 끝나면 클러스터가 건강한지 봅니다. 아래 운영 플레이북이 `patronictl list` 결과를
-보여 줍니다.
+### 접속 정보 확인
+
+`site.yml` 배포가 끝나면 마지막에 접속 정보가 자동으로 출력됩니다. 나중에 다시 보고
+싶으면 언제든 아래를 실행하세요.
+
+```bash
+ansible-playbook playbooks/connection-info.yml
+
+# 비밀번호까지 실제 값으로 보려면(기본은 ******** 로 가림)
+ansible-playbook playbooks/connection-info.yml -e show_passwords=true
+```
+
+애플리케이션 접속 문자열, 노드별 직접 접속 주소, HAProxy 통계·Patroni REST·etcd
+엔드포인트, 그리고 현재 리더가 누구인지까지 한 화면에 정리해 보여 줍니다.
+
+### 동작 검증 (스모크 테스트)
+
+"배포가 끝났는가"가 아니라 "실제로 동작하는가"를 확인합니다. VIP를 통해 진짜 SQL을
+날려 라우팅과 복제 전파까지 검증하며, 어긋나면 그 자리에서 이유를 말하고 중단합니다.
+
+```bash
+ansible-playbook playbooks/verify-cluster.yml
+```
+
+검사 항목은 태그로 나뉘어 있어 일부만 돌릴 수도 있습니다.
+
+| 태그 | 검증 내용 |
+|------|-----------|
+| `services` | 노드별 systemd 서비스(etcd/patroni/pgbouncer/haproxy/keepalived)가 모두 active |
+| `etcd` | etcd 멤버 전원이 healthy (정족수 확보) |
+| `patroni` | 리더가 정확히 1대, 인벤토리의 모든 DB 노드가 등록·정상 상태 |
+| `vip` | VIP가 정확히 한 노드에만 부착 (2대 이상이면 VRRP 스플릿) |
+| `sql` | VIP 쓰기 포트→리더, 읽기 포트→복제본으로 라우팅되는지 실제 접속으로 확인 |
+| `replication` | 리더에 쓴 행이 모든 복제본에서 읽히는지 + 복제 지연 출력 |
+
+```bash
+ansible-playbook playbooks/verify-cluster.yml --tags sql        # 라우팅만
+ansible-playbook playbooks/verify-cluster.yml --skip-tags replication   # 읽기 전용 검증만
+```
+
+> `replication` 검사는 `_ha_verify` 임시 테이블을 만들었다가 지웁니다(실패해도 `always`
+> 블록에서 반드시 정리). 운영 DB에 쓰기가 부담되면 `--skip-tags replication`을 쓰세요.
+> 실패 시 종료 코드가 0이 아니므로 CI 파이프라인에 그대로 물릴 수 있습니다.
+
+### 상태만 빠르게 보기
 
 ```bash
 ansible-playbook playbooks/cluster-status.yml
@@ -749,11 +892,13 @@ SELECT count(*) AS conns, current_setting('max_connections') AS max FROM pg_stat
 
 마지막으로, 운영에 올리기 전 반드시 확인할 것들입니다.
 
-- `group_vars/all/main.yml`의 `ChangeMe_...` 비밀번호를 **모두** Vault 값으로
+- `group_vars/all/main.yml`의 `ChangeMe_...` 비밀번호를 **모두** 실제 값으로
   교체했는가? (DB 계정뿐 아니라 `patroni_restapi_password`, `haproxy_stats_password`,
-  `keepalived_auth_pass`도 포함)
-- Vault 파일을 **`group_vars/all/vault.yml`** 경로에 두었는가? (`group_vars/vault.yml`은
-  로드되지 않음 — 9장 (6) 참고)
+  `keepalived_auth_pass`도 포함 — Vault 사용 여부와 무관하게 필수)
+- 비밀번호 파일을 **`group_vars/all/vault.yml`** 경로에 두었는가? (`group_vars/vault.yml`은
+  로드되지 않아 임시 비밀번호가 그대로 배포됨 — 9장 (6) 참고)
+- 배포 후 `patronictl list`나 HAProxy 통계 화면 로그인으로 **교체한 비밀번호가 실제로
+  적용됐는지** 확인했는가? (경로를 잘못 두면 조용히 무시되므로 눈으로 확인이 필요)
 - `postgresql_allowed_cidrs`를 **실제 애플리케이션 IP 대역**으로 좁혔는가?
 - etcd, Patroni REST, 노드 간 복제 트래픽에 **TLS 적용**을 검토했는가? (이 플레이북은
   아직 TLS를 자동 구성하지 않으므로, 최소한 DB 전용 내부망(VLAN)으로 격리하는 것을
@@ -761,6 +906,9 @@ SELECT count(*) AS conns, current_setting('max_connections') AS max FROM pg_stat
 - 백업(`pgbackrest_enabled`)을 켰는가? 켰다면 **복원 훈련**까지 해 봤는가?
   (백업은 복원해 본 적이 있어야 진짜 백업입니다)
 - `vault.yml`이 `.gitignore`에 의해 저장소에 올라가지 않는지 확인했는가?
+  (`git status`에 보이지 않아야 정상. 파일 이름을 바꿨다면 `.gitignore`에 걸리지 않습니다)
+- 암호화 없이 평문으로 운영한다면(9장 (6) B 방식), 제어 노드의 `vault.yml` 파일 권한을
+  `chmod 600`으로 좁혔는가?
 
 ---
 
@@ -771,6 +919,7 @@ SELECT count(*) AS conns, current_setting('max_connections') AS max FROM pg_stat
 ├── LICENSE                  # Apache License 2.0 전문
 ├── NOTICE                   # 저작권 고지(배포 시 유지 필요)
 ├── ansible.cfg              # Ansible 기본 동작 설정
+├── help.sh                  # 명령어 사용법 안내(`./help.sh [주제]`)
 ├── site.yml                 # 메인 플레이북(여기서 모든 역할을 순서대로 실행)
 ├── requirements.yml         # 필요한 Ansible 컬렉션 목록
 ├── .github/workflows/
@@ -780,10 +929,12 @@ SELECT count(*) AS conns, current_setting('max_connections') AS max FROM pg_stat
 ├── group_vars/
 │   ├── all/
 │   │   ├── main.yml         # 전역 변수(버전·VIP·튜닝 프로파일·접근 IP·임시 비밀번호)
-│   │   └── vault.yml        # (직접 생성) 운영 비밀번호 — 암호화 후 커밋 금지
-│   └── vault.yml.example    # 운영용 비밀번호 템플릿(all/vault.yml 로 복사 후 암호화)
+│   │   └── vault.yml        # (직접 생성) 운영 비밀번호 — 암호화는 선택, 커밋은 금지
+│   └── vault.yml.example    # 운영용 비밀번호 템플릿(all/vault.yml 로 복사해 사용)
 ├── playbooks/
 │   ├── cluster-status.yml   # 클러스터 상태 확인
+│   ├── connection-info.yml  # 접속 정보 출력(site.yml 마지막에 자동 실행)
+│   ├── verify-cluster.yml   # 동작 검증 스모크 테스트(라우팅·복제까지 실제 확인)
 │   ├── switchover.yml       # 계획된 리더 전환
 │   ├── apply-tuning.yml     # 튜닝 파라미터를 실행 중 클러스터에 적용(edit-config)
 │   ├── restart-postgresql.yml  # PostgreSQL 롤링 재시작(복제본→리더)
@@ -945,6 +1096,9 @@ ansible-playbook site.yml -e offline_mode=true -e offline_repo_exclusive=false \
 
 지정할 값은 번들의 `MANIFEST.txt` 맨 아래 **[설치 시 반드시 지정할 변수]** 항목에
 그대로 적혀 있습니다.
+
+> 위 예시의 `--ask-vault-pass`는 `all/vault.yml`을 암호화한 경우에만 필요합니다.
+> Vault 없이 배포한다면(9장 (6) B 방식) 이 옵션을 빼고 실행하세요.
 
 > `-e` 로 매번 주기 번거롭다면 `group_vars/all/main.yml` 에서 `offline_mode: true`,
 > `offline_repo_exclusive`, `postgresql_package_pin` 을 고정해도 됩니다. 그러면

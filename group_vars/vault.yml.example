@@ -2,15 +2,24 @@
 # =============================================================================
 # 운영용 비밀번호 템플릿
 # -----------------------------------------------------------------------------
-# 이 파일을 group_vars/all/vault.yml 로 복사한 뒤 실제 비밀번호로 채우고
-# 암호화하세요. (주의: group_vars/ 바로 아래가 아니라 반드시 all/ 안에 두어야
+# 이 파일을 group_vars/all/vault.yml 로 복사한 뒤 실제 비밀번호로 채우세요.
+# (주의: group_vars/ 바로 아래가 아니라 반드시 all/ 안에 두어야
 # Ansible 이 자동으로 로드합니다 — group_vars/ 의 파일명은 "그룹 이름"과
 # 일치해야 하는데 vault 라는 그룹은 없기 때문입니다.)
 #
 #   cp group_vars/vault.yml.example group_vars/all/vault.yml
-#   ansible-vault encrypt group_vars/all/vault.yml
-# 실행 시:
-#   ansible-playbook site.yml --ask-vault-pass
+#
+# 암호화는 선택 사항입니다. 이 경로는 .gitignore 에 등록되어 있으므로
+# 평문으로 두어도 저장소에는 올라가지 않습니다.
+#
+#   [A] 암호화해서 쓰기
+#       ansible-vault encrypt group_vars/all/vault.yml
+#       ansible-playbook site.yml --ask-vault-pass
+#
+#   [B] 암호화 없이 쓰기 (평문 그대로, chmod 600 권장)
+#       ansible-playbook site.yml
+#
+# 자세한 내용은 README 9장 (6) 을 참고하세요.
 #
 # 아래 키들은 group_vars/all/main.yml 의 임시(ChangeMe_*) 비밀번호를 덮어씁니다.
 # =============================================================================

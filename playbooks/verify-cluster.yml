@@ -1,0 +1,405 @@
+---
+# =============================================================================
+# 클러스터 동작 검증(스모크 테스트) 플레이북
+# -----------------------------------------------------------------------------
+# 배포가 "끝났는지"가 아니라 "실제로 동작하는지"를 확인합니다. 서비스 상태부터
+# VIP 를 통한 실제 SQL 접속·라우팅·복제 전파까지 실제 트래픽으로 검증하며,
+# 하나라도 어긋나면 어느 항목에서 왜 실패했는지 표시하고 즉시 중단합니다.
+#
+# 사용법:
+#   ansible-playbook playbooks/verify-cluster.yml              # 전체 검증
+#   ansible-playbook playbooks/verify-cluster.yml --tags services,etcd
+#   ansible-playbook playbooks/verify-cluster.yml --tags sql   # 접속/라우팅만
+#
+# 검증 항목(태그):
+#   services    노드별 systemd 서비스가 모두 active 인가
+#   etcd        etcd 멤버 전원이 healthy 한가 (정족수)
+#   patroni     리더가 정확히 1대이고 모든 멤버가 정상 상태인가
+#   vip         VIP 가 정확히 한 노드에만 떠 있는가
+#   sql         VIP 쓰기/읽기 포트가 올바른 역할로 라우팅되는가
+#   replication 리더에 쓴 데이터가 모든 복제본에 전파되는가
+#
+# 이 플레이북은 검증용 임시 테이블(_ha_verify)을 만들고 끝나면 반드시 지웁니다.
+# 읽기 전용 검증만 원하면 --skip-tags replication 을 주세요.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 1) 노드별 systemd 서비스 상태
+# -----------------------------------------------------------------------------
+- name: "[1/6] 서비스 상태 검증"
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true      # 한 노드라도 실패하면 즉시 전체 중단
+  tags: [services]
+  tasks:
+    - name: 이 노드가 맡은 서비스 목록 계산
+      ansible.builtin.set_fact:
+        expected_services: >-
+          {{ (['etcd'] if inventory_hostname in (groups['etcd'] | default([])) else [])
+             + (['patroni'] if inventory_hostname in (groups['patroni_cluster'] | default([])) else [])
+             + (['pgbouncer'] if inventory_hostname in (groups['pgbouncer'] | default([])) else [])
+             + (['haproxy', 'keepalived'] if inventory_hostname in (groups['haproxy'] | default([])) else []) }}
+
+    - name: systemd 서비스가 active 인지 확인
+      ansible.builtin.command: "systemctl is-active {{ item }}"
+      register: vc_service
+      changed_when: false
+      failed_when: vc_service.stdout | trim != 'active'
+      loop: "{{ expected_services }}"
+      loop_control:
+        label: "{{ inventory_hostname }} / {{ item }}"
+
+# -----------------------------------------------------------------------------
+# 2) etcd 정족수 — 멤버 전원이 healthy 여야 페일오버가 동작합니다.
+# -----------------------------------------------------------------------------
+- name: "[2/6] etcd 정족수 검증"
+  hosts: etcd[0]
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tags: [etcd]
+  tasks:
+    - name: etcd 엔드포인트 헬스 조회
+      ansible.builtin.command: "{{ etcd_install_dir }}/etcdctl endpoint health --cluster"
+      register: vc_etcd
+      changed_when: false
+      failed_when: false
+
+    - name: etcd 멤버 전원이 healthy 여야 함
+      ansible.builtin.assert:
+        that:
+          - (vc_etcd.stdout + vc_etcd.stderr).split('\n')
+            | select('search', 'is healthy')
+            | list | length == (groups['etcd'] | length)
+        fail_msg: >-
+          etcd {{ groups['etcd'] | length }}대 중 일부가 unhealthy 입니다.
+          출력: {{ (vc_etcd.stdout + vc_etcd.stderr) | trim }}
+        success_msg: "etcd {{ groups['etcd'] | length }}대 모두 healthy"
+
+# -----------------------------------------------------------------------------
+# 3) Patroni 클러스터 — 리더 1대 + 전 멤버 정상
+# -----------------------------------------------------------------------------
+- name: "[3/6] Patroni 클러스터 상태 검증"
+  hosts: patroni_cluster[0]
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tags: [patroni]
+  tasks:
+    - name: patronictl list (JSON) 조회
+      ansible.builtin.command:
+        cmd: >-
+          {{ patroni_venv_dir }}/bin/patronictl
+          -c {{ patroni_config_dir }}/patroni.yml list -f json
+      become_user: postgres
+      register: vc_patroni
+      changed_when: false
+
+    - name: 결과 파싱
+      ansible.builtin.set_fact:
+        vc_members: "{{ vc_patroni.stdout | from_json }}"
+
+    - name: 리더가 정확히 1대여야 함
+      ansible.builtin.assert:
+        that:
+          - vc_members | selectattr('Role', 'equalto', 'Leader') | list | length == 1
+        fail_msg: >-
+          리더가 1대가 아닙니다(현재
+          {{ vc_members | selectattr('Role', 'equalto', 'Leader') | list | length }}대).
+          split-brain 이거나 리더 선출이 진행 중입니다.
+        success_msg: >-
+          리더 정상:
+          {{ (vc_members | selectattr('Role', 'equalto', 'Leader') | list | first).Member }}
+
+    - name: 인벤토리의 모든 DB 노드가 클러스터에 등록되어야 함
+      ansible.builtin.assert:
+        that:
+          - vc_members | length == (groups['patroni_cluster'] | length)
+        fail_msg: >-
+          인벤토리에는 {{ groups['patroni_cluster'] | length }}대인데 클러스터 멤버는
+          {{ vc_members | length }}대입니다. 등록되지 않은 노드:
+          {{ groups['patroni_cluster']
+             | difference(vc_members | map(attribute='Member') | list) }}
+
+    - name: 모든 멤버가 running/streaming 상태여야 함
+      ansible.builtin.assert:
+        that:
+          - vc_members | rejectattr('State', 'in', ['running', 'streaming']) | list | length == 0
+        fail_msg: >-
+          비정상 상태의 멤버가 있습니다:
+          {{ vc_members | rejectattr('State', 'in', ['running', 'streaming'])
+             | map(attribute='Member') | list }}
+        success_msg: "멤버 {{ vc_members | length }}대 모두 정상 상태"
+
+# -----------------------------------------------------------------------------
+# 4) VIP — 정확히 한 노드에만 떠 있어야 합니다(둘 이상이면 VRRP 스플릿).
+# -----------------------------------------------------------------------------
+- name: "[4/6] VIP 검증"
+  hosts: haproxy
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tags: [vip]
+  tasks:
+    - name: 이 노드가 VIP 를 갖고 있는지 확인
+      ansible.builtin.shell:
+        cmd: "ip -4 -o addr show | grep -qw '{{ cluster_vip }}/{{ cluster_vip_cidr }}' && echo yes || echo no"
+      register: vc_vip
+      changed_when: false
+
+    - name: VIP 는 정확히 한 노드에만 있어야 함
+      run_once: true
+      ansible.builtin.assert:
+        that:
+          - groups['haproxy'] | map('extract', hostvars, ['vc_vip', 'stdout'])
+            | select('equalto', 'yes') | list | length == 1
+        fail_msg: >-
+          VIP {{ cluster_vip }} 보유 노드가 1대가 아닙니다. 노드별 보유 여부:
+          {{ dict(groups['haproxy']
+                  | zip(groups['haproxy'] | map('extract', hostvars, ['vc_vip', 'stdout']))) }}
+          (0대면 keepalived 상태를, 2대 이상이면 방화벽의 VRRP(프로토콜 112) 허용을 확인하세요)
+        success_msg: "VIP {{ cluster_vip }} 정상 부착"
+
+# -----------------------------------------------------------------------------
+# 5) 실제 SQL 접속 — VIP 의 쓰기/읽기 포트가 올바른 역할로 라우팅되는지.
+# -----------------------------------------------------------------------------
+- name: "[5/6] VIP 라우팅 검증 (실제 SQL 접속)"
+  hosts: patroni_cluster[0]
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  tags: [sql]
+
+  vars:
+    psql: >-
+      {{ (postgresql_bin_dir_rhel if ansible_facts['os_family'] == 'RedHat'
+          else postgresql_bin_dir_deb) }}/psql
+    # 라운드로빈이 실제로 도는지 보려면 복제본 수보다 넉넉히 시도해야 합니다.
+    read_probe_count: "{{ (groups['patroni_cluster'] | length) * 2 }}"
+
+  environment:
+    PGPASSWORD: "{{ app_db_password }}"
+
+  tasks:
+    - name: 쓰기 포트({{ haproxy_primary_port }})는 리더로 연결되어야 함
+      ansible.builtin.command:
+        argv:
+          - "{{ psql }}"
+          - -h
+          - "{{ cluster_vip }}"
+          - -p
+          - "{{ haproxy_primary_port }}"
+          - -U
+          - "{{ app_db_user }}"
+          - -d
+          - "{{ app_db_name }}"
+          - -tAc
+          - select pg_is_in_recovery()
+      register: vc_rw
+      changed_when: false
+
+    - name: 쓰기 포트 결과 확인
+      ansible.builtin.assert:
+        that:
+          - vc_rw.stdout | trim == 'f'
+        fail_msg: >-
+          {{ cluster_vip }}:{{ haproxy_primary_port }} 가 복제본으로 연결되었습니다
+          (pg_is_in_recovery={{ vc_rw.stdout | trim }}). HAProxy 헬스체크(8008)를 확인하세요.
+        success_msg: "쓰기 포트 → 리더 정상"
+
+    - name: 읽기 포트({{ haproxy_replica_port }})로 여러 번 접속
+      ansible.builtin.command:
+        argv:
+          - "{{ psql }}"
+          - -h
+          - "{{ cluster_vip }}"
+          - -p
+          - "{{ haproxy_replica_port }}"
+          - -U
+          - "{{ app_db_user }}"
+          - -d
+          - "{{ app_db_name }}"
+          - -tAc
+          - select pg_is_in_recovery()
+      register: vc_ro
+      changed_when: false
+      loop: "{{ range(1, (read_probe_count | int) + 1) | list }}"
+      loop_control:
+        label: "probe {{ item }}/{{ read_probe_count }}"
+
+    # 복제본이 하나도 없으면 haproxy_replica_fallback_to_primary 로 인해
+    # 리더가 응답할 수 있습니다. 그때는 실패가 아니라 "폴백 동작 중"입니다.
+    - name: 읽기 포트 결과 확인
+      ansible.builtin.assert:
+        that:
+          - vc_ro.results | map(attribute='stdout') | map('trim')
+            | select('equalto', 'f') | list | length == 0
+        fail_msg: >-
+          {{ cluster_vip }}:{{ haproxy_replica_port }} 가 리더로 연결되었습니다.
+          살아있는 복제본이 없어 폴백(haproxy_replica_fallback_to_primary)이
+          동작 중인지 확인하세요.
+        success_msg: "읽기 포트 → 복제본 정상 ({{ read_probe_count }}회 모두)"
+
+    - name: PgBouncer({{ pgbouncer_port }}) 경유 접속 확인
+      ansible.builtin.command:
+        argv:
+          - "{{ psql }}"
+          - -h
+          - "{{ hostvars[item].node_ip }}"
+          - -p
+          - "{{ pgbouncer_port }}"
+          - -U
+          - "{{ app_db_user }}"
+          - -d
+          - "{{ app_db_name }}"
+          - -tAc
+          - select 1
+      register: vc_pgb
+      changed_when: false
+      failed_when: vc_pgb.rc != 0 or (vc_pgb.stdout | trim) != '1'
+      loop: "{{ groups['pgbouncer'] | default([]) }}"
+      loop_control:
+        label: "{{ item }}:{{ pgbouncer_port }}"
+
+# -----------------------------------------------------------------------------
+# 6) 복제 전파 — 리더에 쓴 행이 모든 복제본에서 실제로 읽히는지.
+#    검증용 임시 테이블을 쓰고, 실패하더라도 always 블록에서 반드시 정리합니다.
+# -----------------------------------------------------------------------------
+- name: "[6/6] 복제 전파 검증"
+  hosts: patroni_cluster[0]
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  tags: [replication]
+
+  vars:
+    psql: >-
+      {{ (postgresql_bin_dir_rhel if ansible_facts['os_family'] == 'RedHat'
+          else postgresql_bin_dir_deb) }}/psql
+    db_hosts: "{{ groups['patroni_cluster'] }}"
+
+  environment:
+    PGPASSWORD: "{{ app_db_password }}"
+
+  tasks:
+    - name: 복제 전파 검증
+      block:
+        - name: 검증용 테이블 생성 및 행 삽입 (VIP 쓰기 포트)
+          ansible.builtin.command:
+            argv:
+              - "{{ psql }}"
+              - -h
+              - "{{ cluster_vip }}"
+              - -p
+              - "{{ haproxy_primary_port }}"
+              - -U
+              - "{{ app_db_user }}"
+              - -d
+              - "{{ app_db_name }}"
+              - -tAc
+              - >-
+                create table if not exists _ha_verify(id serial primary key,
+                t timestamptz default now()); insert into _ha_verify default values;
+                select count(*) from _ha_verify
+          register: vc_write
+          changed_when: true
+
+        - name: 복제 반영 대기
+          ansible.builtin.pause:
+            seconds: 2
+
+        - name: 각 노드에서 행 수 조회
+          ansible.builtin.command:
+            argv:
+              - "{{ psql }}"
+              - -h
+              - "{{ hostvars[item].node_ip }}"
+              - -p
+              - "{{ pgbouncer_port }}"
+              - -U
+              - "{{ app_db_user }}"
+              - -d
+              - "{{ app_db_name }}"
+              - -tAc
+              - select count(*) from _ha_verify
+          register: vc_counts
+          changed_when: false
+          loop: "{{ db_hosts }}"
+          loop_control:
+            label: "{{ item }}"
+
+        - name: 모든 노드의 행 수가 리더와 같아야 함
+          ansible.builtin.assert:
+            that:
+              - vc_counts.results | map(attribute='stdout') | map('trim')
+                | unique | list | length == 1
+              - (vc_counts.results | map(attribute='stdout') | map('trim') | first)
+                == (vc_write.stdout_lines | last | trim)
+            fail_msg: >-
+              복제가 전파되지 않았습니다. 리더={{ vc_write.stdout_lines | last | trim }}행,
+              노드별={{ dict(db_hosts
+                             | zip(vc_counts.results | map(attribute='stdout') | map('trim'))) }}
+            success_msg: >-
+              복제 전파 정상 — {{ db_hosts | length }}개 노드 모두
+              {{ vc_write.stdout_lines | last | trim }}행
+
+        - name: 복제 지연 조회 (리더)
+          ansible.builtin.command:
+            argv:
+              - "{{ psql }}"
+              - -p
+              - "{{ postgresql_port }}"
+              - -tAF
+              - " "
+              - -c
+              - >-
+                select application_name, state, sync_state,
+                coalesce(replay_lag::text, 'none') from pg_stat_replication
+                order by application_name
+          become_user: postgres
+          register: vc_lag
+          changed_when: false
+
+        - name: 복제 상태 출력
+          ansible.builtin.debug:
+            msg: >-
+              {{ ['복제 상태 (application_name / state / sync_state / replay_lag)']
+                 + vc_lag.stdout_lines }}
+
+      always:
+        - name: 검증용 테이블 정리
+          ansible.builtin.command:
+            argv:
+              - "{{ psql }}"
+              - -h
+              - "{{ cluster_vip }}"
+              - -p
+              - "{{ haproxy_primary_port }}"
+              - -U
+              - "{{ app_db_user }}"
+              - -d
+              - "{{ app_db_name }}"
+              - -tAc
+              - drop table if exists _ha_verify
+          changed_when: true
+          failed_when: false
+
+# -----------------------------------------------------------------------------
+# 검증 통과 요약
+# -----------------------------------------------------------------------------
+# 앞선 플레이가 하나라도 실패하면 any_errors_fatal 이 전체를 중단시키므로
+# 이 요약은 "모두 통과했을 때만" 출력됩니다.
+- name: 검증 결과 요약
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: 통과 메시지
+      ansible.builtin.debug:
+        msg: |-
+          검증 완료 — 여기까지 왔다면 모든 항목을 통과한 것입니다.
+          (실패 시에는 해당 항목에서 fail_msg 와 함께 즉시 중단됩니다)
+
+          접속 정보를 다시 보려면:
+            ansible-playbook playbooks/connection-info.yml

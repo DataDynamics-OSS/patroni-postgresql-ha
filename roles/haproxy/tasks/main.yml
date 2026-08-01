@@ -47,7 +47,7 @@
 - name: haproxy.cfg 배포
   ansible.builtin.template:
     src: haproxy.cfg.j2
-    dest: /etc/haproxy/haproxy.cfg
+    dest: "{{ haproxy_config_file }}"
     owner: root
     group: root
     mode: "0644"
@@ -86,10 +86,12 @@
     sysctl_set: true
     reload: true
 
-# HAProxy 가 죽으면 이 스크립트가 실패 → Keepalived 가 우선순위를 낮춰 VIP 를 넘김
+# HAProxy 가 죽으면 이 스크립트가 실패 → Keepalived 가 우선순위를 낮춰 VIP 를 넘김.
+# 프로세스 이름이 아니라 '우리 설정파일 + RW 포트'로 인스턴스를 특정한다
+# (같은 노드의 다른 HAProxy 인스턴스에 가려 오판하지 않도록 — 템플릿 주석 참조).
 - name: Keepalived 용 HAProxy 헬스체크 스크립트 배포
-  ansible.builtin.copy:
-    src: check_haproxy.sh
+  ansible.builtin.template:
+    src: check_haproxy.sh.j2
     dest: /etc/keepalived/check_haproxy.sh
     owner: root
     group: root

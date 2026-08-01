@@ -1,0 +1,97 @@
+---
+# =============================================================================
+# 접속 정보 출력 플레이북
+# -----------------------------------------------------------------------------
+# 배포가 끝난 클러스터에 "어디로 어떻게 붙는지"를 한 화면에 정리해 보여 줍니다.
+# site.yml 마지막 단계에서 자동으로 실행되며, 언제든 단독 실행도 가능합니다.
+#
+# 사용법:
+#   ansible-playbook playbooks/connection-info.yml
+#   ansible-playbook playbooks/connection-info.yml -e show_passwords=true
+#
+# 비밀번호는 기본적으로 가려서 출력합니다(터미널 로그·화면 공유 유출 방지).
+# 실제 값이 필요하면 show_passwords=true 를 주세요.
+# =============================================================================
+- name: 접속 정보 출력
+  hosts: patroni_cluster[0]
+  become: true
+  gather_facts: false
+  tags: [info]
+
+  vars:
+    show_passwords: false
+    # 가림 처리 헬퍼 — show_passwords 가 참일 때만 실제 값을 노출합니다.
+    _pw_app: "{{ app_db_password if (show_passwords | bool) else '********' }}"
+    _pw_stats: "{{ haproxy_stats_password if (show_passwords | bool) else '********' }}"
+    _pw_rest: "{{ patroni_restapi_password if (show_passwords | bool) else '********' }}"
+
+  tasks:
+    # 현재 리더가 누구인지는 배포 시점마다 달라지므로 실시간으로 조회합니다.
+    # 아직 부트스트랩 전이거나 일부 태그만 실행한 경우에도 플레이가 실패하지
+    # 않도록 실패를 무시합니다.
+    - name: 현재 클러스터 상태 조회
+      ansible.builtin.command:
+        cmd: >-
+          {{ patroni_venv_dir }}/bin/patronictl
+          -c {{ patroni_config_dir }}/patroni.yml list -f json
+      become_user: postgres
+      register: ci_patroni
+      changed_when: false
+      failed_when: false
+
+    - name: 조회 결과 파싱
+      ansible.builtin.set_fact:
+        ci_members: >-
+          {{ (ci_patroni.stdout | from_json)
+             if (ci_patroni.rc == 0 and ci_patroni.stdout | length > 0)
+             else [] }}
+
+    - name: 접속 정보 출력
+      ansible.builtin.debug:
+        msg: |-
+          ═══════════════════════════════════════════════════════════════════
+           {{ cluster_name }} — 접속 정보
+          ═══════════════════════════════════════════════════════════════════
+
+          [ 애플리케이션 접속 — VIP 로만 붙으세요 ]
+            쓰기(RW)  postgresql://{{ app_db_user }}@{{ cluster_vip }}:{{ haproxy_primary_port }}/{{ app_db_name }}
+                      psql -h {{ cluster_vip }} -p {{ haproxy_primary_port }} -U {{ app_db_user }} -d {{ app_db_name }}
+            읽기(RO)  postgresql://{{ app_db_user }}@{{ cluster_vip }}:{{ haproxy_replica_port }}/{{ app_db_name }}
+                      psql -h {{ cluster_vip }} -p {{ haproxy_replica_port }} -U {{ app_db_user }} -d {{ app_db_name }}
+            비밀번호  {{ _pw_app }}   (변수: app_db_password)
+
+            └ RW 는 항상 현재 리더로, RO 는 건강한 복제본으로 라운드로빈됩니다.
+              페일오버가 나도 애플리케이션은 접속 문자열을 바꿀 필요가 없습니다.
+
+          [ 노드별 직접 접속 ]
+          {% for h in groups['patroni_cluster'] %}
+            {{ '%-10s' | format(h) }} PostgreSQL {{ hostvars[h].node_ip }}:{{ postgresql_port }}
+                       {% if h in (groups['pgbouncer'] | default([])) %}PgBouncer  {{ hostvars[h].node_ip }}:{{ pgbouncer_port }}{% endif %}
+
+          {% endfor %}
+
+          [ 운영 인터페이스 ]
+            HAProxy 통계  http://{{ cluster_vip }}:{{ haproxy_stats_port }}/
+                          계정 {{ haproxy_stats_user }} / {{ _pw_stats }}
+            Patroni REST  {% for h in groups['patroni_cluster'] %}http://{{ hostvars[h].node_ip }}:{{ patroni_rest_port }}{{ ' ' if not loop.last else '' }}{% endfor %}
+
+                          계정 {{ patroni_restapi_username }} / {{ _pw_rest }}  (POST 계열만 인증 필요)
+            etcd          {% for h in groups['etcd'] %}http://{{ hostvars[h].node_ip }}:{{ etcd_client_port }}{{ ' ' if not loop.last else '' }}{% endfor %}
+
+
+          [ 현재 클러스터 구성 ]
+          {% if ci_members | length > 0 %}
+          {% for m in ci_members %}
+            {{ '%-10s' | format(m.Member) }} {{ '%-16s' | format(m.Host) }} {{ '%-8s' | format(m.Role) }} {{ m.State }}
+          {% endfor %}
+          {% else %}
+            (조회 실패 — 아직 부트스트랩 전이거나 Patroni 가 기동 중입니다)
+          {% endif %}
+
+          [ 자주 쓰는 명령 ]
+            상태 확인    ansible-playbook playbooks/cluster-status.yml
+            동작 검증    ansible-playbook playbooks/verify-cluster.yml
+            수동 전환    ansible-playbook playbooks/switchover.yml
+            접속 정보    ansible-playbook playbooks/connection-info.yml
+            노드에서     sudo -u postgres {{ patroni_venv_dir }}/bin/patronictl -c {{ patroni_config_dir }}/patroni.yml list
+          ═══════════════════════════════════════════════════════════════════

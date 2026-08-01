@@ -58,17 +58,44 @@
 # ----------------------------------------------------------------------------
 - name: PostgreSQL 설치 (RHEL/Rocky)
   when: ansible_facts['os_family'] == 'RedHat'
+  vars:
+    pgdg_repo_rpm_url: >-
+      https://download.postgresql.org/pub/repos/yum/reporpms/EL-{{
+      ansible_facts['distribution_major_version'] }}-x86_64/pgdg-redhat-repo-latest.noarch.rpm
   block:
     # 폐쇄망에서는 PGDG 인터넷 저장소 추가/모듈 비활성화를 건너뜁니다
     # (필요한 postgresql 패키지는 로컬 번들 저장소가 제공).
     - name: (온라인) PGDG 저장소 RPM 설치
       ansible.builtin.dnf:
-        name: >-
-          https://download.postgresql.org/pub/repos/yum/reporpms/EL-{{
-          ansible_facts['distribution_major_version'] }}-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+        name: "{{ pgdg_repo_rpm_url }}"
         state: present
         disable_gpg_check: true
       when: not (offline_mode | bool)
+
+    # `state: present` 는 "RPM 이 설치돼 있는가"만 봅니다. 그래서 폐쇄망 테스트
+    # 등으로 /etc/yum.repos.d/pgdg-redhat-all.repo 만 지워진 노드에서는 위
+    # 태스크가 조용히 통과하고, 정작 dnf 에는 PGDG 저장소가 없어 뒤의 패키지
+    # 설치가 "No package postgresql16-server available" 로 실패합니다.
+    # rpm -V 로 누락된 설정 파일을 감지해 복구합니다(사용자가 수정만 한
+    # 경우는 'missing' 이 아니므로 건드리지 않습니다).
+    - name: (온라인) PGDG 저장소 설정 파일 누락 여부 확인
+      ansible.builtin.command: rpm -V pgdg-redhat-repo
+      register: pgdg_repo_verify
+      changed_when: false
+      failed_when: false
+      when: not (offline_mode | bool)
+
+    - name: (온라인) 삭제된 PGDG 저장소 설정 파일 복구
+      ansible.builtin.command: >-
+        rpm -Uvh --replacepkgs --nosignature {{ pgdg_repo_rpm_url }}
+      register: pgdg_repo_restore
+      changed_when: pgdg_repo_restore.rc == 0
+      when:
+        - not (offline_mode | bool)
+        - pgdg_repo_verify.stdout is defined
+        - pgdg_repo_verify.stdout_lines
+          | select('search', '^missing.*/etc/yum\\.repos\\.d/')
+          | list | length > 0
 
     - name: (온라인) 내장 postgresql 모듈 비활성화 (RHEL 8/9)
       ansible.builtin.command: dnf -qy module disable postgresql
