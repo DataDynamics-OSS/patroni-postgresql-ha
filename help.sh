@@ -8,7 +8,7 @@
 #   ./help.sh deploy       # 특정 주제만
 #   ./help.sh all          # 모든 주제를 한 번에
 #
-# 주제: deploy verify ops tuning vault inventory airgap troubleshoot
+# 주제: deploy verify ops tuning vault inventory airgap uninstall troubleshoot
 # =============================================================================
 set -uo pipefail
 
@@ -235,6 +235,32 @@ topic_airgap() {
   desc "인터넷 저장소를 건드리지 않고 로컬 번들 저장소만 사용합니다."
 }
 
+topic_uninstall() {
+  title "언인스톨 (전부 걷어내기)"
+  note "경고: 되돌릴 수 없습니다. PostgreSQL 데이터·etcd 데이터·pgBackRest 백업이 모두 삭제됩니다."
+  note "안전장치로 -e confirm_uninstall=yes 없이는 목록만 출력하고 멈춥니다."
+
+  section "실행"
+  cmd "ansible-playbook ${INV_OPT}playbooks/uninstall.yml"
+  desc "무엇이 지워지는지 목록만 확인(실제로는 아무 것도 하지 않음)."
+  cmd "ansible-playbook ${INV_OPT}playbooks/uninstall.yml -e confirm_uninstall=yes"
+  desc "서비스 중지 → DCS 키 삭제 → 패키지 제거 → 설정·데이터 삭제 → 시스템 설정 원복."
+
+  section "부분만"
+  cmd "ansible-playbook playbooks/uninstall.yml -e confirm_uninstall=yes -e uninstall_remove_packages=false"
+  desc "패키지는 남기고 설정·데이터만 초기화(재설치를 빠르게 하고 싶을 때)."
+  cmd "ansible-playbook playbooks/uninstall.yml -e confirm_uninstall=yes -e uninstall_remove_users=false"
+  desc "서비스 계정(etcd/postgres/pgbouncer)은 남깁니다."
+  cmd "ansible-playbook playbooks/uninstall.yml -e confirm_uninstall=yes --tags files"
+  desc "사용 가능한 태그: services dcs packages files users system"
+
+  section "확인"
+  cmd "ansible all -m shell -a 'systemctl is-active etcd patroni pgbouncer haproxy keepalived'"
+  desc "모두 inactive/unknown 이면 정상적으로 걷힌 것입니다."
+  note "chrony·python3-pip 같은 OS 공용 패키지는 일부러 남깁니다."
+  note "sysctl 값은 설정 파일에서만 제거되며, 실행 중인 커널 값은 재부팅 후 기본값으로 돌아갑니다."
+}
+
 topic_troubleshoot() {
   title "문제 해결"
   section "자주 겪는 것"
@@ -276,6 +302,7 @@ usage() {
   desc "vault         비밀번호 생성 · 암호화 · 사용"
   desc "inventory     인벤토리/변수 확인과 수정 위치"
   desc "airgap        폐쇄망 번들 빌드 · 설치 · 배포"
+  desc "uninstall     전부 걷어내기(데이터 삭제 — 되돌릴 수 없음)"
   desc "troubleshoot  자주 겪는 오류와 대처"
   desc "all           위 전부를 한 번에"
   show_current
@@ -295,10 +322,12 @@ case "${1:-}" in
   vault)             topic_vault ;;
   inventory)         topic_inventory ;;
   airgap)            topic_airgap ;;
+  uninstall)         topic_uninstall ;;
   troubleshoot)      topic_troubleshoot ;;
   all)
     topic_deploy; topic_verify; topic_ops; topic_tuning
-    topic_vault; topic_inventory; topic_airgap; topic_troubleshoot
+    topic_vault; topic_inventory; topic_airgap; topic_uninstall
+    topic_troubleshoot
     ;;
   *)
     printf '%s알 수 없는 주제: %s%s\n' "$Y" "$1" "$R" >&2

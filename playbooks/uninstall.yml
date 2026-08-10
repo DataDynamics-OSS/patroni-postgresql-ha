@@ -1,0 +1,593 @@
+---
+# =============================================================================
+# 전체 언인스톨(uninstall) 플레이북 — site.yml 이 만든 모든 것을 되돌립니다
+# -----------------------------------------------------------------------------
+# site.yml 로 설치한 etcd / PostgreSQL / Patroni / PgBouncer / HAProxy /
+# Keepalived / pgBackRest 를 서비스 중지 → DCS 키 삭제 → 패키지 제거 →
+# 설정·데이터·잔여 파일 삭제 → 시스템 설정 원복 순서로 완전히 걷어냅니다.
+# 실행이 끝나면 노드는 "site.yml 을 처음부터 다시 돌릴 수 있는" 상태가 됩니다.
+#
+# ############################################################################
+# # 경고: 이 플레이북은 데이터를 지웁니다. 되돌릴 수 없습니다.               #
+# #   - PostgreSQL 데이터 디렉터리 전체 (모든 DB, 모든 테이블)              #
+# #   - etcd 데이터 디렉터리 전체                                            #
+# #   - pgBackRest 백업 저장소 (pgbackrest_enabled 였던 경우)                #
+# # 필요한 데이터는 반드시 먼저 백업하세요(pg_dumpall 등).                   #
+# ############################################################################
+#
+# 사용법:
+#   # 0) 무엇이 지워질지 먼저 확인 (아무 것도 바꾸지 않음)
+#   ansible-playbook playbooks/uninstall.yml -e confirm_uninstall=yes --check
+#
+#   # 1) 실제 실행 — confirm_uninstall=yes 없이는 아무 것도 하지 않습니다
+#   ansible-playbook playbooks/uninstall.yml -e confirm_uninstall=yes
+#
+#   # 2) 패키지는 남기고 설정·데이터만 초기화 (재설치를 빠르게 하고 싶을 때)
+#   ansible-playbook playbooks/uninstall.yml -e confirm_uninstall=yes \
+#                                            -e uninstall_remove_packages=false
+#
+#   # 3) 특정 단계만 (태그: services, dcs, packages, files, users, system)
+#   ansible-playbook playbooks/uninstall.yml -e confirm_uninstall=yes --tags files
+#
+# 조절 변수 (기본값은 "완전 제거"):
+#   uninstall_remove_packages       true  패키지(postgresql/pgbouncer/haproxy/
+#                                         keepalived/pgbackrest)와 PGDG 저장소 제거
+#   uninstall_remove_users          true  이 배포가 쓰던 서비스 계정(etcd/postgres/
+#                                         pgbouncer) 삭제. 다른 용도로 postgres 계정을
+#                                         쓰는 노드라면 false 로 두세요.
+#   uninstall_revert_system_tweaks  true  sysctl·방화벽·SELinux·/etc/hosts 원복
+#   uninstall_remove_airgap_bundle  false 폐쇄망 번들 디렉터리까지 삭제
+#                                         (기본 false — 재설치에 다시 쓰이므로)
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 0단계) 안전 확인 — confirm_uninstall=yes 가 없으면 여기서 멈춥니다.
+#   localhost 에서만 동작하므로 대상 서버를 건드리지 않습니다.
+# -----------------------------------------------------------------------------
+- name: 언인스톨 사전 확인
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tags: [always]
+  vars: &uninstall_vars
+    confirm_uninstall: ""
+    uninstall_remove_packages: true
+    uninstall_remove_users: true
+    uninstall_revert_system_tweaks: true
+    uninstall_remove_airgap_bundle: false
+  tasks:
+    - name: 삭제 대상 요약 출력
+      ansible.builtin.debug:
+        msg:
+          - "클러스터            : {{ cluster_name }}"
+          - "etcd 노드           : {{ groups['etcd'] | default([]) | join(', ') }}"
+          - "DB 노드             : {{ groups['patroni_cluster'] | default([]) | join(', ') }}"
+          - "삭제될 DB 데이터    : {{ postgresql_data_dir }}"
+          - "삭제될 etcd 데이터  : {{ etcd_data_dir }}"
+          - "삭제될 백업 저장소  : {{ pgbackrest_repo_path if (pgbackrest_enabled | bool) else '(pgbackrest 미사용)' }}"
+          - "패키지 제거         : {{ uninstall_remove_packages }}"
+          - "서비스 계정 삭제    : {{ uninstall_remove_users }}"
+          - "시스템 설정 원복    : {{ uninstall_revert_system_tweaks }}"
+
+    - name: confirm_uninstall=yes 가 지정되었는지 확인
+      ansible.builtin.assert:
+        that:
+          - (confirm_uninstall | default('') | lower) == 'yes'
+        fail_msg: >-
+          안전장치입니다. 위 목록의 데이터가 모두 삭제되며 되돌릴 수 없습니다.
+          정말 실행하려면 `-e confirm_uninstall=yes` 를 붙여 다시 실행하세요.
+        success_msg: "확인되었습니다. 언인스톨을 시작합니다."
+
+# -----------------------------------------------------------------------------
+# 1단계) 서비스 중지 — etcd 는 제외(다음 단계에서 DCS 키를 지워야 하므로 살려 둠)
+#   의존 관계의 위쪽부터 내려옵니다: keepalived → haproxy → pgbouncer → patroni.
+#   Patroni 를 먼저 죽이면 남은 노드가 페일오버를 시도하며 불필요한 승격이 일어납니다.
+# -----------------------------------------------------------------------------
+- name: 서비스 중지 (etcd 제외)
+  hosts: all
+  become: true
+  gather_facts: false
+  tags: [services]
+  vars: *uninstall_vars
+  tasks:
+    - name: 현재 노드의 서비스 목록 수집
+      ansible.builtin.service_facts:
+
+    # systemd 모듈은 없는 유닛을 만나면 실패하므로, 실제 존재하는 것만 건드립니다.
+    - name: 서비스 중지 및 자동 시작 해제
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: stopped
+        enabled: false
+      loop:
+        - keepalived
+        - haproxy
+        - pgbouncer
+        - patroni
+        - postgresql                                   # Debian 계열 기본 서비스
+        - "postgresql-{{ postgresql_version }}"        # RHEL(PGDG) 기본 서비스
+      when: (item ~ '.service') in (ansible_facts.services | default({}))
+      failed_when: false
+
+    # Keepalived 가 비정상 종료된 경우 VIP 가 인터페이스에 남아 있을 수 있습니다.
+    - name: VIP 주소 회수 (남아 있으면)
+      ansible.builtin.command: >-
+        ip addr del {{ cluster_vip }}/{{ cluster_vip_cidr }} dev {{ vip_interface }}
+      changed_when: false
+      failed_when: false
+      when: inventory_hostname in (groups['haproxy'] | default([]))
+
+    # Patroni 가 죽어도 자식 postgres 가 남는 경우가 있어, 데이터 삭제 전에 확실히 정리합니다.
+    - name: 남아 있는 PostgreSQL / Patroni 프로세스 정리
+      ansible.builtin.command: pkill -u postgres
+      register: uninstall_pkill
+      changed_when: uninstall_pkill.rc == 0
+      failed_when: false
+      when: inventory_hostname in (groups['patroni_cluster'] | default([]))
+
+# -----------------------------------------------------------------------------
+# 2단계) DCS(etcd) 에서 이 클러스터의 흔적 삭제 후 etcd 중지
+#   Patroni 는 /service/<cluster_name>/ 아래에 리더·멤버 정보를 남깁니다.
+#   etcd 데이터 디렉터리를 통째로 지울 것이지만, 같은 etcd 를 다른 용도로도
+#   쓰는 경우를 대비해 우리 키만 먼저 지웁니다.
+# -----------------------------------------------------------------------------
+- name: DCS 정리 및 etcd 중지
+  hosts: etcd
+  become: true
+  gather_facts: false
+  tags: [dcs, services]
+  vars: *uninstall_vars
+  tasks:
+    - name: Patroni 클러스터 키 삭제 — /service/{{ cluster_name }}
+      ansible.builtin.command:
+        argv:
+          - "{{ etcd_install_dir }}/etcdctl"
+          - "--endpoints=http://{{ node_ip }}:{{ etcd_client_port }}"
+          - del
+          - --prefix
+          - "/service/{{ cluster_name }}"
+      environment:
+        ETCDCTL_API: "3"
+      register: etcd_key_del
+      changed_when: (etcd_key_del.stdout | default('0') | trim) not in ['0', '']
+      failed_when: false          # etcd 가 이미 죽어 있어도 계속 진행
+      run_once: true
+
+    - name: 삭제된 키 개수
+      ansible.builtin.debug:
+        msg: >-
+          {{ (etcd_key_del.stdout | default('') | trim) | ternary(
+             etcd_key_del.stdout | trim ~ '개 키 삭제됨',
+             'etcd 응답 없음 — 데이터 디렉터리 삭제로 처리됩니다') }}
+      run_once: true
+
+    - name: etcd 서비스 중지 및 자동 시작 해제
+      ansible.builtin.systemd:
+        name: etcd
+        state: stopped
+        enabled: false
+      failed_when: false
+
+# -----------------------------------------------------------------------------
+# 3단계) 패키지 · 저장소 제거 → 설정/데이터/잔여 파일 삭제 → 시스템 설정 원복
+#   os_family 판별이 필요하므로 이 플레이는 facts 를 수집합니다.
+# -----------------------------------------------------------------------------
+- name: 패키지 · 파일 · 시스템 설정 정리
+  hosts: all
+  become: true
+  gather_facts: true
+  vars: *uninstall_vars
+  tasks:
+    # -------------------------------------------------------------------------
+    # 3-1) 패키지 제거
+    #   common 역할이 깐 python3-pip·chrony·acl 등 "OS 공용" 패키지는 건드리지
+    #   않습니다. 시스템의 다른 것들이 의존할 수 있기 때문입니다.
+    # -------------------------------------------------------------------------
+    - name: 패키지 제거
+      when: uninstall_remove_packages | bool
+      tags: [packages]
+      block:
+        - name: 이 노드에서 제거할 패키지 계산 (RHEL/Rocky)
+          ansible.builtin.set_fact:
+            uninstall_packages_rhel: >-
+              {{ ((["postgresql" ~ postgresql_version ~ "-server",
+                    "postgresql" ~ postgresql_version ~ "-contrib", "pgbackrest"]
+                     if inventory_hostname in (groups['patroni_cluster'] | default([])) else [])
+                + (["pgbouncer"]
+                     if inventory_hostname in (groups['pgbouncer'] | default([])) else [])
+                + (["haproxy", "keepalived"]
+                     if inventory_hostname in (groups['haproxy'] | default([])) else [])) }}
+          when: ansible_facts['os_family'] == 'RedHat'
+
+        # autoremove 는 이 패키지들 때문에 딸려 들어온 의존 패키지까지 걷어냅니다.
+        # (명시적으로 설치한 python3-psycopg2·chrony 등은 대상이 아닙니다)
+        - name: PostgreSQL / PgBouncer / HAProxy 패키지 제거 (RHEL/Rocky)
+          ansible.builtin.dnf:
+            name: "{{ uninstall_packages_rhel }}"
+            state: absent
+            autoremove: true
+          when:
+            - ansible_facts['os_family'] == 'RedHat'
+            - uninstall_packages_rhel | length > 0
+
+        - name: PGDG 저장소 RPM 제거 (RHEL/Rocky)
+          ansible.builtin.dnf:
+            name: pgdg-redhat-repo
+            state: absent
+          when:
+            - ansible_facts['os_family'] == 'RedHat'
+            - inventory_hostname in (groups['patroni_cluster'] | default([]))
+
+        # dnf 는 제거 후에도 .repo 파일을 .rpmsave 로 남기는 경우가 있어 함께 지웁니다.
+        - name: 남은 PGDG 저장소 파일 찾기 (RHEL/Rocky)
+          ansible.builtin.find:
+            paths: /etc/yum.repos.d
+            patterns: "pgdg-*.repo*"
+          register: pgdg_repo_leftovers
+          when:
+            - ansible_facts['os_family'] == 'RedHat'
+            - inventory_hostname in (groups['patroni_cluster'] | default([]))
+
+        - name: 남은 PGDG 저장소 파일 삭제 (RHEL/Rocky)
+          ansible.builtin.file:
+            path: "{{ item.path }}"
+            state: absent
+          loop: "{{ pgdg_repo_leftovers.files | default([]) }}"
+          loop_control:
+            label: "{{ item.path }}"
+
+        - name: 이 노드에서 제거할 패키지 계산 (Debian/Ubuntu)
+          ansible.builtin.set_fact:
+            uninstall_packages_deb: >-
+              {{ ((["postgresql-" ~ postgresql_version,
+                    "postgresql-client-" ~ postgresql_version,
+                    "postgresql-contrib", "pgbackrest"]
+                     if inventory_hostname in (groups['patroni_cluster'] | default([])) else [])
+                + (["pgbouncer"]
+                     if inventory_hostname in (groups['pgbouncer'] | default([])) else [])
+                + (["haproxy", "keepalived"]
+                     if inventory_hostname in (groups['haproxy'] | default([])) else [])) }}
+          when: ansible_facts['os_family'] == 'Debian'
+
+        - name: PostgreSQL / PgBouncer / HAProxy 패키지 제거 (Debian/Ubuntu)
+          ansible.builtin.apt:
+            name: "{{ uninstall_packages_deb }}"
+            state: absent
+            purge: true                # 설정 파일까지 함께 제거
+            autoremove: true
+          when:
+            - ansible_facts['os_family'] == 'Debian'
+            - uninstall_packages_deb | length > 0
+
+        - name: PGDG apt 저장소·서명키 제거 (Debian/Ubuntu)
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /etc/apt/sources.list.d/pgdg.list
+            - /usr/share/keyrings/postgresql.asc
+          when:
+            - ansible_facts['os_family'] == 'Debian'
+            - inventory_hostname in (groups['patroni_cluster'] | default([]))
+
+    # -------------------------------------------------------------------------
+    # 3-2) etcd 관련 파일 삭제 (바이너리는 패키지가 아니라 직접 설치한 것)
+    # -------------------------------------------------------------------------
+    - name: etcd 파일 삭제
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/etcd.service
+        - /etc/etcd.conf.yml
+        - "{{ etcd_data_dir }}"
+        - "{{ etcd_install_dir }}/etcd"
+        - "{{ etcd_install_dir }}/etcdctl"
+        # 설치 과정에서 남는 잔여물 (다운로드 tarball 과 압축 해제 디렉터리)
+        - "/tmp/etcd-v{{ etcd_version }}.tar.gz"
+        - "/tmp/etcd-v{{ etcd_version }}-linux-amd64"
+      when: inventory_hostname in (groups['etcd'] | default([]))
+      tags: [files]
+
+    # -------------------------------------------------------------------------
+    # 3-3) Patroni / PostgreSQL 관련 파일·데이터 삭제
+    # -------------------------------------------------------------------------
+    - name: Patroni / PostgreSQL 파일·데이터 삭제
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/patroni.service
+        - "{{ patroni_config_dir }}"
+        - "{{ patroni_log_dir }}"
+        - "{{ patroni_venv_dir }}"                    # Patroni 전용 venv
+        - /usr/local/bin/patroni
+        - /usr/local/bin/patronictl
+        - "{{ postgresql_data_dir }}"                 # ← DB 데이터 전체
+        - "{{ postgresql_data_dir | dirname }}"       # 역할이 만든 상위 디렉터리
+        - /etc/modules-load.d/softdog.conf            # watchdog 설정
+        - /etc/udev/rules.d/99-patroni-watchdog.rules
+      when: inventory_hostname in (groups['patroni_cluster'] | default([]))
+      tags: [files]
+
+    - name: postgres 사용자 .bashrc 의 PATH 추가 줄 제거 (Debian/Ubuntu)
+      ansible.builtin.lineinfile:
+        path: /var/lib/postgresql/.bashrc
+        regexp: '^export PATH=/usr/lib/postgresql/'
+        state: absent
+      failed_when: false                              # 파일이 없으면 무시
+      when:
+        - ansible_facts['os_family'] == 'Debian'
+        - inventory_hostname in (groups['patroni_cluster'] | default([]))
+      tags: [files]
+
+    # -------------------------------------------------------------------------
+    # 3-4) pgBackRest 관련 파일 삭제 (백업 저장소 포함 — 되돌릴 수 없음)
+    # -------------------------------------------------------------------------
+    - name: pgBackRest 파일·백업 저장소 삭제
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/pgbackrest
+        - "{{ pgbackrest_repo_path }}"                # ← 백업 전체
+        - /var/log/pgbackrest
+        - /usr/local/bin/pgbackrest-backup.sh
+        - /etc/cron.d/pgbackrest
+      when: inventory_hostname in (groups['patroni_cluster'] | default([]))
+      tags: [files]
+
+    # -------------------------------------------------------------------------
+    # 3-5) PgBouncer 관련 파일 삭제
+    # -------------------------------------------------------------------------
+    - name: PgBouncer 파일 삭제
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/pgbouncer
+        - /var/log/pgbouncer
+        - /etc/tmpfiles.d/pgbouncer.conf
+        - /run/pgbouncer
+      when: inventory_hostname in (groups['pgbouncer'] | default([]))
+      tags: [files]
+
+    # -------------------------------------------------------------------------
+    # 3-6) HAProxy / Keepalived 관련 파일 삭제
+    # -------------------------------------------------------------------------
+    - name: HAProxy / Keepalived 파일 삭제
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ haproxy_config_file }}"
+        - "{{ haproxy_config_file }}.rpmsave"         # dnf remove 가 남기는 백업본
+        - /etc/keepalived/keepalived.conf
+        - /etc/keepalived/keepalived.conf.rpmsave
+        - /etc/keepalived/check_haproxy.sh
+      when: inventory_hostname in (groups['haproxy'] | default([]))
+      tags: [files]
+
+    # -------------------------------------------------------------------------
+    # 3-7) 폐쇄망 번들 (기본은 남겨 둠 — 재설치에 그대로 다시 쓰이므로)
+    # -------------------------------------------------------------------------
+    - name: 폐쇄망 번들 디렉터리 삭제
+      ansible.builtin.file:
+        path: "{{ offline_base_dir }}"
+        state: absent
+      when: uninstall_remove_airgap_bundle | bool
+      tags: [files]
+
+    - name: 폐쇄망 로컬 dnf 저장소 설정 삭제
+      ansible.builtin.file:
+        path: "/etc/yum.repos.d/{{ offline_repo_name }}.repo"
+        state: absent
+      when:
+        - uninstall_remove_airgap_bundle | bool
+        - ansible_facts['os_family'] == 'RedHat'
+      tags: [files]
+
+    # -------------------------------------------------------------------------
+    # 3-8) systemd 에 유닛 삭제를 반영
+    # -------------------------------------------------------------------------
+    - name: systemd 데몬 리로드
+      ansible.builtin.systemd:
+        daemon_reload: true
+      tags: [files, services]
+
+    - name: 실패 상태로 남은 유닛 초기화
+      ansible.builtin.command: systemctl reset-failed
+      changed_when: false
+      failed_when: false
+      tags: [files, services]
+
+    # -------------------------------------------------------------------------
+    # 3-9) 시스템 설정 원복
+    # -------------------------------------------------------------------------
+    - name: 시스템 설정 원복
+      when: uninstall_revert_system_tweaks | bool
+      tags: [system]
+      block:
+        # common 역할과 haproxy 역할이 추가한 sysctl 항목을 제거합니다.
+        # 주의: 파일에서 지워질 뿐, 실행 중인 커널 값은 재부팅 후 기본값으로 돌아갑니다.
+        - name: sysctl 설정 제거
+          ansible.posix.sysctl:
+            name: "{{ item }}"
+            state: absent
+            reload: true
+          loop:
+            - vm.overcommit_memory
+            - vm.swappiness
+            - net.ipv4.tcp_keepalive_time
+            - net.ipv4.ip_nonlocal_bind
+          failed_when: false
+
+        - name: /etc/hosts 의 클러스터 구성원 항목 제거
+          ansible.builtin.lineinfile:
+            path: /etc/hosts
+            regexp: "\\s{{ item }}$"
+            state: absent
+          loop: >-
+            {{ ((groups['etcd'] | default([])) + (groups['patroni_cluster'] | default([]))) | unique }}
+
+        - name: RHEL 내장 postgresql 모듈 비활성화 해제
+          ansible.builtin.command: dnf -qy module reset postgresql
+          register: pg_module_reset
+          changed_when: "'Resetting' in (pg_module_reset.stdout | default(''))"
+          failed_when: false
+          when:
+            - ansible_facts['os_family'] == 'RedHat'
+            - inventory_hostname in (groups['patroni_cluster'] | default([]))
+
+        # --- 방화벽: common 역할이 연 포트를 그대로 되닫습니다 ------------------
+        - name: 이 노드에서 닫을 포트 계산 (개방 때와 같은 규칙)
+          ansible.builtin.set_fact:
+            node_firewall_ports: >-
+              {{ (([etcd_client_port, etcd_peer_port]
+                     if inventory_hostname in (groups['etcd'] | default([])) else [])
+                + ([postgresql_port, patroni_rest_port]
+                     if inventory_hostname in (groups['patroni_cluster'] | default([])) else [])
+                + ([pgbouncer_port]
+                     if inventory_hostname in (groups['pgbouncer'] | default([])) else [])
+                + ([haproxy_primary_port, haproxy_replica_port, haproxy_stats_port]
+                     if inventory_hostname in (groups['haproxy'] | default([])) else []))
+                | map('int') | list }}
+          when: configure_firewall | bool
+
+        - name: 서비스 상태 수집 (firewalld 활성 여부 확인용, RHEL)
+          ansible.builtin.service_facts:
+          when: configure_firewall | bool and ansible_facts['os_family'] == 'RedHat'
+
+        - name: 방화벽 포트 닫기 (firewalld)
+          ansible.posix.firewalld:
+            port: "{{ item }}/tcp"
+            permanent: true
+            immediate: true
+            state: disabled
+          loop: "{{ node_firewall_ports }}"
+          when:
+            - configure_firewall | bool
+            - ansible_facts['os_family'] == 'RedHat'
+            - (ansible_facts.services['firewalld.service'].state | default('')) == 'running'
+
+        - name: VRRP 프로토콜 허용 해제 (firewalld, haproxy 노드)
+          ansible.posix.firewalld:
+            protocol: vrrp
+            permanent: true
+            immediate: true
+            state: disabled
+          when:
+            - configure_firewall | bool
+            - ansible_facts['os_family'] == 'RedHat'
+            - (ansible_facts.services['firewalld.service'].state | default('')) == 'running'
+            - inventory_hostname in (groups['haproxy'] | default([]))
+
+        - name: ufw 활성 여부 확인 (Debian)
+          ansible.builtin.command: ufw status
+          register: ufw_state
+          changed_when: false
+          failed_when: false
+          when: configure_firewall | bool and ansible_facts['os_family'] == 'Debian'
+
+        - name: 방화벽 포트 닫기 (ufw)
+          community.general.ufw:
+            rule: allow
+            port: "{{ item }}"
+            proto: tcp
+            delete: true
+          loop: "{{ node_firewall_ports }}"
+          when:
+            - configure_firewall | bool
+            - ansible_facts['os_family'] == 'Debian'
+            - "'Status: active' in (ufw_state.stdout | default(''))"
+
+        # --- SELinux: haproxy 역할이 켠 boolean 을 되돌립니다 -------------------
+        - name: HAProxy 임의 포트 연결 허용 해제 (SELinux)
+          ansible.posix.seboolean:
+            name: haproxy_connect_any
+            state: false
+            persistent: true
+          when:
+            - ansible_facts['os_family'] == 'RedHat'
+            - (ansible_facts['selinux'] | default({})).status | default('disabled') == 'enabled'
+            - inventory_hostname in (groups['haproxy'] | default([]))
+
+    # -------------------------------------------------------------------------
+    # 3-10) 서비스 계정 삭제 — 가장 마지막에 수행합니다.
+    #   (앞 단계들이 이 계정 소유의 파일을 다뤄야 하므로 순서가 중요합니다)
+    #   etcd 계정은 etcd 역할이 직접 만든 것이고, postgres/pgbouncer 계정은
+    #   패키지가 만듭니다. 재설치 시 모두 자동으로 다시 생성됩니다.
+    # -------------------------------------------------------------------------
+    - name: 서비스 계정 삭제
+      when: uninstall_remove_users | bool
+      tags: [users]
+      block:
+        - name: etcd 계정·그룹 삭제
+          ansible.builtin.user:
+            name: etcd
+            state: absent
+            remove: false                 # 홈은 etcd_data_dir 이며 이미 삭제됨
+          when: inventory_hostname in (groups['etcd'] | default([]))
+
+        - name: pgbouncer 계정 삭제 (RHEL)
+          ansible.builtin.user:
+            name: pgbouncer
+            state: absent
+            remove: false
+          when:
+            - ansible_facts['os_family'] == 'RedHat'
+            - inventory_hostname in (groups['pgbouncer'] | default([]))
+
+        - name: postgres 계정 삭제
+          ansible.builtin.user:
+            name: postgres
+            state: absent
+            remove: false
+          when: inventory_hostname in (groups['patroni_cluster'] | default([]))
+
+        - name: 남은 그룹 삭제
+          ansible.builtin.group:
+            name: "{{ item }}"
+            state: absent
+          loop:
+            - etcd
+            - pgbouncer
+            - postgres
+          failed_when: false
+
+        - name: postgres 홈 디렉터리 잔여물 삭제
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /var/lib/postgresql
+            - /var/lib/pgsql
+          when: inventory_hostname in (groups['patroni_cluster'] | default([]))
+
+# -----------------------------------------------------------------------------
+# 4단계) 결과 안내
+# -----------------------------------------------------------------------------
+- name: 언인스톨 완료 안내
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tags: [always]
+  vars: *uninstall_vars
+  tasks:
+    - name: 완료 메시지
+      ansible.builtin.debug:
+        msg: >-
+          {{ ["언인스톨이 완료되었습니다.",
+              "",
+              "남아 있는 것 (의도적으로 건드리지 않음)",
+              "  - chrony / python3-pip / acl 등 OS 공용 패키지",
+              "  - 실행 중인 커널 sysctl 값 (설정 파일에서는 제거됨. 재부팅 시 기본값으로 복귀)"]
+            + (["  - 서비스 계정 etcd / postgres / pgbouncer (uninstall_remove_users=false)"]
+                 if not (uninstall_remove_users | bool) else [])
+            + (["  - 패키지와 PGDG 저장소 (uninstall_remove_packages=false)"]
+                 if not (uninstall_remove_packages | bool) else [])
+            + (["  - 폐쇄망 번들 " ~ offline_base_dir ~ " (uninstall_remove_airgap_bundle=false)"]
+                 if not (uninstall_remove_airgap_bundle | bool) else [])
+            + ["",
+               "확인:   ansible all -m shell -a 'systemctl is-active etcd patroni pgbouncer haproxy keepalived'",
+               "재설치: ansible-playbook site.yml"] }}

@@ -768,6 +768,53 @@ patronictl -c /etc/patroni/patroni.yml edit-config      # 클러스터 공통 �
 > 고치는 게 아니라 `patronictl edit-config`(= `apply-tuning.yml`)로 바꿉니다. 그래야
 > 모든 노드에 일관되게 반영됩니다.
 
+### 전부 걷어내기 (언인스톨)
+
+테스트 환경을 초기화하거나 클러스터를 폐기할 때 `uninstall.yml`을 씁니다. `site.yml`이
+설치한 것을 역순으로 —  **서비스 중지 → DCS(etcd) 키 삭제 → 패키지 제거 → 설정·데이터·잔여
+파일 삭제 → 시스템 설정 원복 → 서비스 계정 삭제** — 걷어내며, 끝나면 노드는 `site.yml`을
+처음부터 다시 돌릴 수 있는 상태가 됩니다.
+
+> **경고:** 되돌릴 수 없습니다. PostgreSQL 데이터 디렉터리(모든 DB), etcd 데이터,
+> pgBackRest 백업 저장소가 **모두 삭제**됩니다. 필요한 데이터는 먼저 백업하세요.
+
+그래서 안전장치로 `-e confirm_uninstall=yes` 없이는 아무 것도 하지 않습니다. 확인 없이
+실행하면 "무엇이 지워지는지" 목록만 출력하고 멈춥니다.
+
+```bash
+# 무엇이 지워질지 목록만 확인 (실행되지 않음)
+ansible-playbook playbooks/uninstall.yml
+
+# 실제 실행
+ansible-playbook playbooks/uninstall.yml -e confirm_uninstall=yes
+
+# 패키지는 남기고 설정·데이터만 초기화 (재설치를 빠르게 하고 싶을 때)
+ansible-playbook playbooks/uninstall.yml -e confirm_uninstall=yes \
+                                         -e uninstall_remove_packages=false
+
+# 특정 단계만 (태그: services · dcs · packages · files · users · system)
+ansible-playbook playbooks/uninstall.yml -e confirm_uninstall=yes --tags files
+```
+
+동작을 조절하는 변수입니다. 기본값은 "완전 제거"입니다.
+
+| 변수 | 기본값 | 설명 |
+|------|--------|------|
+| `confirm_uninstall` | *(없음)* | **필수.** `yes` 를 줘야 실제로 실행됩니다 |
+| `uninstall_remove_packages` | `true` | PostgreSQL·PgBouncer·HAProxy·Keepalived·pgBackRest 패키지와 PGDG 저장소까지 제거 |
+| `uninstall_remove_users` | `true` | 서비스 계정 `etcd`·`postgres`·`pgbouncer` 삭제. 그 노드에서 postgres 계정을 다른 용도로도 쓴다면 `false` |
+| `uninstall_revert_system_tweaks` | `true` | sysctl·방화벽 포트·SELinux boolean·`/etc/hosts` 항목 원복 |
+| `uninstall_remove_airgap_bundle` | `false` | 폐쇄망 번들(`/opt/patroni-airgap`)까지 삭제. 재설치에 다시 쓰이므로 기본은 남겨 둠 |
+
+일부러 **건드리지 않는 것**도 있습니다. `chrony`·`python3-pip`·`acl` 같은 OS 공용 패키지는
+시스템의 다른 것들이 의존할 수 있어 그대로 둡니다. sysctl 값은 설정 파일에서 제거되지만
+**실행 중인 커널 값은 재부팅해야** 기본값으로 돌아갑니다.
+
+```bash
+# 잘 걷혔는지 확인 — 모두 inactive/unknown 이면 정상
+ansible all -m shell -a 'systemctl is-active etcd patroni pgbouncer haproxy keepalived'
+```
+
 ---
 
 ## 14. 트러블슈팅
@@ -938,6 +985,7 @@ SELECT count(*) AS conns, current_setting('max_connections') AS max FROM pg_stat
 │   ├── switchover.yml       # 계획된 리더 전환
 │   ├── apply-tuning.yml     # 튜닝 파라미터를 실행 중 클러스터에 적용(edit-config)
 │   ├── restart-postgresql.yml  # PostgreSQL 롤링 재시작(복제본→리더)
+│   ├── uninstall.yml        # 전체 언인스톨(데이터 삭제 — confirm_uninstall=yes 필요)
 │   └── templates/
 │       └── dynamic-tuning.yml.j2   # edit-config 로 넘길 동적 설정 패치
 ├── scripts/
