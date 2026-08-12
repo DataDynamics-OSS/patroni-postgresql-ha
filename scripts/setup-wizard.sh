@@ -159,11 +159,21 @@ network_of() {   # <ip> <prefix> → a.b.c.d/prefix
 }
 
 # 기존 파일에서 `키: 값` 을 읽어 재실행 시 기본값으로 씁니다.
+#
+# LC_ALL=C 가 필수입니다. ko_KR.UTF-8 같은 로케일에서 GNU sed 4.8 은 한글이
+# 섞인 줄에서 `#.*$` 를 매칭하지 못해 주석이 값에 딸려 들어옵니다. 실제로
+# cluster_name 에 주석 전체가 들어가 Patroni scope 가 깨진 적이 있습니다.
+# 여기서 다루는 구분자(#, 따옴표)는 모두 ASCII 라 바이트 단위 처리로 충분합니다.
 prev() {  # <파일> <키> <대체 기본값>
   local f=$1 k=$2 d=${3:-} v=""
-  [[ -f $f ]] && v=$(sed -nE "s/^${k}:[[:space:]]*//p" "$f" | head -1 | sed -E 's/[[:space:]]*#.*$//; s/^"(.*)"$/\1/; s/^'\''(.*)'\''$/\1/')
+  [[ -f $f ]] && v=$(LC_ALL=C sed -nE "s/^${k}:[[:space:]]*//p" "$f" | head -1 \
+                     | LC_ALL=C sed -E 's/[[:space:]]*#.*$//; s/[[:space:]]+$//; s/^"(.*)"$/\1/; s/^'\''(.*)'\''$/\1/')
   echo "${v:-$d}"
 }
+
+# 설정 파일에 그대로 들어가면 안 되는 값을 걸러 냅니다. 공백·주석 기호가 섞인
+# 이름은 Patroni scope / etcd 키를 깨뜨립니다.
+valid_token() { [[ $1 =~ ^[A-Za-z0-9._-]+$ ]]; }
 
 # =============================================================================
 say
@@ -265,13 +275,13 @@ for i in "${!NODE_IPS[@]}"; do
   out=$(ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new \
            "${SSH_USER}@${ip}" bash -s <"$PROBE_SH" 2>/dev/null | grep '^PROBE|')
   if [[ -z $out ]]; then UNREACHABLE+=("$n ($ip)"); continue; fi
-  NIC_OF[$n]=$(sed -n 's/.*|nic=\([^|]*\).*/\1/p' <<<"$out")
-  PFX_OF[$n]=$(sed -n 's/.*|pfx=\([^|]*\).*/\1/p' <<<"$out")
-  OS_OF[$n]=$(sed -n 's/.*|os=\([^|]*\).*/\1/p' <<<"$out")
-  ALLIPS_OF[$n]=$(sed -n 's/.*|all=\([^|]*\).*/\1/p' <<<"$out")
-  [[ $(sed -n 's/.*|sudo=\([^|]*\).*/\1/p' <<<"$out") == yes ]] || \
+  NIC_OF[$n]=$(LC_ALL=C sed -n 's/.*|nic=\([^|]*\).*/\1/p' <<<"$out")
+  PFX_OF[$n]=$(LC_ALL=C sed -n 's/.*|pfx=\([^|]*\).*/\1/p' <<<"$out")
+  OS_OF[$n]=$(LC_ALL=C sed -n 's/.*|os=\([^|]*\).*/\1/p' <<<"$out")
+  ALLIPS_OF[$n]=$(LC_ALL=C sed -n 's/.*|all=\([^|]*\).*/\1/p' <<<"$out")
+  [[ $(LC_ALL=C sed -n 's/.*|sudo=\([^|]*\).*/\1/p' <<<"$out") == yes ]] || \
     warn "${n}: 무패스워드 sudo 불가 — 배포가 실패합니다. sudoers 를 먼저 정리하세요."
-  [[ $(sed -n 's/.*|py=\([^|]*\).*/\1/p' <<<"$out") == yes ]] || \
+  [[ $(LC_ALL=C sed -n 's/.*|py=\([^|]*\).*/\1/p' <<<"$out") == yes ]] || \
     warn "${n}: python3 이 없습니다 — Ansible 이 동작하지 않습니다."
 done
 
@@ -357,8 +367,17 @@ fi
 # =============================================================================
 head1 "4/7  클러스터 · 접속 허용 대역"
 # =============================================================================
-ask CLUSTER_NAME "Patroni 클러스터 이름" "$(prev "$VAR_FILE" cluster_name "$(prev group_vars/all/main.yml cluster_name pg-ha-cluster)")"
-ask PG_VERSION   "PostgreSQL 메이저 버전" "$(prev "$VAR_FILE" postgresql_version "$(prev group_vars/all/main.yml postgresql_version 16)")"
+while :; do
+  ask CLUSTER_NAME "Patroni 클러스터 이름" "$(prev "$VAR_FILE" cluster_name "$(prev group_vars/all/main.yml cluster_name pg-ha-cluster)")"
+  # 공백·주석 기호가 섞이면 Patroni scope 와 etcd 키가 깨집니다.
+  valid_token "$CLUSTER_NAME" && break
+  err "영문/숫자/._- 만 쓸 수 있습니다(공백·# 불가): [${CLUSTER_NAME}]"
+done
+while :; do
+  ask PG_VERSION "PostgreSQL 메이저 버전" "$(prev "$VAR_FILE" postgresql_version "$(prev group_vars/all/main.yml postgresql_version 16)")"
+  [[ $PG_VERSION =~ ^[0-9]+$ ]] && break
+  err "숫자만 입력하세요(예: 16): [${PG_VERSION}]"
+done
 
 say
 say "${DIM}  DB 접속을 허용할 대역입니다(pg_hba.conf). 노드 IP 에서 자동 산출했습니다.${R}"
@@ -403,9 +422,9 @@ PGCHECK_OUT=$(ssh -o BatchMode=yes -o ConnectTimeout=15 "${SSH_USER}@${NODE_IPS[
                 bash -s <"$PGCHECK_SH" 2>/dev/null | grep '^PGCHECK|')
 rm -f "$PGCHECK_SH"
 
-PG_STATE=$(sed -n 's/.*|state=\([^|]*\).*/\1/p' <<<"$PGCHECK_OUT")
-PG_BEST=$(sed -n 's/.*|best=\([^|]*\).*/\1/p' <<<"$PGCHECK_OUT")
-PG_LATEST=$(sed -n 's/.*|latest=\([^|]*\).*/\1/p' <<<"$PGCHECK_OUT")
+PG_STATE=$(LC_ALL=C sed -n 's/.*|state=\([^|]*\).*/\1/p' <<<"$PGCHECK_OUT")
+PG_BEST=$(LC_ALL=C sed -n 's/.*|best=\([^|]*\).*/\1/p' <<<"$PGCHECK_OUT")
+PG_LATEST=$(LC_ALL=C sed -n 's/.*|latest=\([^|]*\).*/\1/p' <<<"$PGCHECK_OUT")
 
 if [[ $PG_STATE == ok && -n $PG_BEST ]]; then
   if [[ $PG_BEST == "$PG_LATEST" ]]; then
@@ -507,9 +526,9 @@ else
     p=${PATH_ARGS[$i]}
     linechk=$(grep -F "|p=${p}|" <<<"$PATHCHK_OUT" | head -1)
     [[ -z $linechk ]] && continue
-    ex=$(sed -n 's/.*|exists=\([^|]*\).*/\1/p' <<<"$linechk")
-    em=$(sed -n 's/.*|empty=\([^|]*\).*/\1/p' <<<"$linechk")
-    fr=$(sed -n 's/.*|freemb=\([^|]*\).*/\1/p' <<<"$linechk")
+    ex=$(LC_ALL=C sed -n 's/.*|exists=\([^|]*\).*/\1/p' <<<"$linechk")
+    em=$(LC_ALL=C sed -n 's/.*|empty=\([^|]*\).*/\1/p' <<<"$linechk")
+    fr=$(LC_ALL=C sed -n 's/.*|freemb=\([^|]*\).*/\1/p' <<<"$linechk")
     note="여유 ${fr}MB"
     # 내용이 있다는 사실이 문제가 되는 것은 데이터 디렉터리뿐입니다.
     # /usr/local/bin, /etc/patroni 같은 공용·설정 경로는 원래 비어 있지 않으므로
