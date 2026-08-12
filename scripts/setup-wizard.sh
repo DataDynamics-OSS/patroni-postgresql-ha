@@ -17,6 +17,8 @@
 #   - VIP 를 붙일 NIC 이름을 노드에서 읽어옵니다 (eth0/enp1s0 실수 원천 차단)
 #   - VIP 가 노드와 같은 서브넷인지, 남이 이미 쓰고 있지 않은지 확인
 #   - 접속 허용 대역을 노드 IP 에서 자동 산출
+#   - 설치 가능한 PostgreSQL 빌드를 depsolve 로 실제 판정 (OpenSSL 의존성)
+#   - 설치 경로의 여유 공간과 기존 데이터 유무를 확인
 #   - OS/파이썬/sudo 사용 가능 여부를 미리 점검
 #
 # 사용법:
@@ -175,7 +177,7 @@ $DRY_RUN && say "  ${Y}--dry-run: 파일을 쓰지 않고 결과만 보여 줍�
 command -v ansible >/dev/null || die "ansible 이 없습니다. 먼저 설치하세요."
 
 # =============================================================================
-head1 "1/6  노드 목록"
+head1 "1/7  노드 목록"
 # =============================================================================
 say "${DIM}  DB(Patroni) 노드의 IP 를 공백으로 구분해 입력하세요. 2대 이상, 홀수 권장.${R}"
 
@@ -220,7 +222,7 @@ else
 fi
 
 # =============================================================================
-head1 "2/6  노드 점검 — 실제로 접속해서 확인합니다"
+head1 "2/7  노드 점검 — 실제로 접속해서 확인합니다"
 # =============================================================================
 PROBE_INV=$(mktemp)
 trap 'rm -f "$PROBE_INV" "${PROBE_INV}.out" 2>/dev/null' EXIT
@@ -304,7 +306,7 @@ fi
 DETECTED_PFX=${PFX_OF[${NODE_NAMES[0]}]:-24}
 
 # =============================================================================
-head1 "3/6  VIP (가상 IP)"
+head1 "3/7  VIP (가상 IP)"
 # =============================================================================
 say "${DIM}  클라이언트가 바라볼 대표 IP 입니다. keepalived 가 현재 리더 노드에 붙입니다.${R}"
 
@@ -353,7 +355,7 @@ if [[ $VIP_INTERFACE != "$DETECTED_NIC" ]]; then
 fi
 
 # =============================================================================
-head1 "4/6  클러스터 · 접속 허용 대역"
+head1 "4/7  클러스터 · 접속 허용 대역"
 # =============================================================================
 ask CLUSTER_NAME "Patroni 클러스터 이름" "$(prev "$VAR_FILE" cluster_name "$(prev group_vars/all/main.yml cluster_name pg-ha-cluster)")"
 ask PG_VERSION   "PostgreSQL 메이저 버전" "$(prev "$VAR_FILE" postgresql_version "$(prev group_vars/all/main.yml postgresql_version 16)")"
@@ -428,7 +430,113 @@ read -r -p "  패키지 버전 고정 ${DIM}[${PKG_PIN:-고정 안 함}]${R}: " 
 [[ -n $_pin ]] && PKG_PIN=$_pin
 
 # =============================================================================
-head1 "5/6  비밀번호"
+head1 "5/7  설치 경로"
+# =============================================================================
+# 데이터/백업 디렉터리는 별도 디스크에 두는 경우가 많아 환경마다 다릅니다.
+# 기본값을 그대로 쓸 수 있게 하되, 바꾸면 노드에서 실제로 확인합니다.
+
+# 레이블 / 변수명 / group_vars 키 / 기본값
+PATH_LABELS=("PostgreSQL 데이터(PGDATA)" "Patroni 가상환경" "Patroni 설정" \
+             "Patroni 로그" "etcd 데이터" "etcd 바이너리 설치" "pgBackRest 백업 저장소")
+PATH_VARS=(P_PGDATA P_VENV P_PATCONF P_PATLOG P_ETCDDATA P_ETCDBIN P_BACKUP)
+PATH_KEYS=(postgresql_data_dir patroni_venv_dir patroni_config_dir \
+           patroni_log_dir etcd_data_dir etcd_install_dir pgbackrest_repo_path)
+# main.yml 의 기본값. PGDATA 는 버전이 섞여 있어 선택한 버전으로 펼칩니다.
+PATH_DEFS=("/var/lib/postgresql/${PG_VERSION}/data" /opt/patroni /etc/patroni \
+           /var/log/patroni /var/lib/etcd /usr/local/bin /var/lib/pgbackrest)
+
+# 재실행이면 기존 파일 값을, 아니면 위 기본값을 초기값으로 씁니다.
+for i in "${!PATH_VARS[@]}"; do
+  printf -v "${PATH_VARS[$i]}" '%s' "$(prev "$VAR_FILE" "${PATH_KEYS[$i]}" "${PATH_DEFS[$i]}")"
+done
+
+say "  ${DIM}패키지가 정하는 실행 파일 경로는 묻지 않습니다(변경 시 동작이 깨짐):${R}"
+say "  ${DIM}    RHEL 계열   /usr/pgsql-${PG_VERSION}/bin${R}"
+say "  ${DIM}    Debian 계열 /usr/lib/postgresql/${PG_VERSION}/bin${R}"
+say
+say "  ${B}기본 경로${R}"
+for i in "${!PATH_VARS[@]}"; do
+  row "  ${PATH_LABELS[$i]}" "${DIM}$(eval echo "\$${PATH_VARS[$i]}")${R}" 28
+done
+say
+
+if ask_yn "위 기본 경로를 그대로 쓸까요?" y; then
+  ok "기본 경로를 사용합니다."
+else
+  say
+  for i in "${!PATH_VARS[@]}"; do
+    while :; do
+      ask "${PATH_VARS[$i]}" "${PATH_LABELS[$i]}" "$(eval echo "\$${PATH_VARS[$i]}")"
+      # 절대 경로가 아니면 Ansible 이 예측 못 할 위치에 파일을 만듭니다.
+      [[ $(eval echo "\$${PATH_VARS[$i]}") == /* ]] && break
+      err "절대 경로(/ 로 시작)여야 합니다."
+    done
+  done
+fi
+
+# --- 노드에서 경로 상태 확인 -------------------------------------------------
+# 이미 데이터가 있는 디렉터리를 PGDATA 로 잡으면 초기화가 실패하거나 기존
+# 데이터를 덮어쓸 수 있습니다. 여유 공간도 미리 봅니다.
+say
+say "${DIM}  경로 상태를 노드에서 확인하는 중...${R}"
+
+PATHCHK_SH=$(mktemp)
+{
+  echo 'for p in "$@"; do'
+  echo '  ex=no; empty=yes'
+  echo '  [ -e "$p" ] && ex=yes'
+  echo '  [ -d "$p" ] && [ -n "$(ls -A "$p" 2>/dev/null)" ] && empty=no'
+  # 아직 없는 경로는 존재하는 상위 디렉터리 기준으로 여유 공간을 봅니다.
+  echo '  probe=$p; while [ ! -d "$probe" ] && [ "$probe" != "/" ]; do probe=$(dirname "$probe"); done'
+  echo '  free=$(df -Pm "$probe" 2>/dev/null | awk "NR==2 {print \$4}")'
+  echo '  echo "PATHCHK|p=$p|exists=$ex|empty=$empty|freemb=${free:-?}"'
+  echo 'done'
+} >"$PATHCHK_SH"
+
+PATH_ARGS=()
+for v in "${PATH_VARS[@]}"; do PATH_ARGS+=("$(eval echo "\$$v")"); done
+
+PATHCHK_OUT=$(ssh -o BatchMode=yes -o ConnectTimeout=10 "${SSH_USER}@${NODE_IPS[0]}" \
+                bash -s -- "${PATH_ARGS[@]}" <"$PATHCHK_SH" 2>/dev/null | grep '^PATHCHK|')
+rm -f "$PATHCHK_SH"
+
+if [[ -z $PATHCHK_OUT ]]; then
+  warn "경로 상태를 확인하지 못했습니다(노드 접속 실패). 값은 그대로 사용합니다."
+else
+  for i in "${!PATH_VARS[@]}"; do
+    p=${PATH_ARGS[$i]}
+    linechk=$(grep -F "|p=${p}|" <<<"$PATHCHK_OUT" | head -1)
+    [[ -z $linechk ]] && continue
+    ex=$(sed -n 's/.*|exists=\([^|]*\).*/\1/p' <<<"$linechk")
+    em=$(sed -n 's/.*|empty=\([^|]*\).*/\1/p' <<<"$linechk")
+    fr=$(sed -n 's/.*|freemb=\([^|]*\).*/\1/p' <<<"$linechk")
+    note="여유 ${fr}MB"
+    # 내용이 있다는 사실이 문제가 되는 것은 데이터 디렉터리뿐입니다.
+    # /usr/local/bin, /etc/patroni 같은 공용·설정 경로는 원래 비어 있지 않으므로
+    # 경고하면 소음만 됩니다.
+    case ${PATH_KEYS[$i]} in
+      postgresql_data_dir|etcd_data_dir)
+        if [[ $ex == yes && $em == no ]]; then
+          warn "${PATH_LABELS[$i]}: ${p} — 이미 데이터가 있습니다(${note})."
+          say  "  ${DIM}    기존 클러스터를 재사용하는 것이 아니라면 배포가 실패하거나${R}"
+          say  "  ${DIM}    기존 데이터를 덮어쓸 수 있습니다. 경로를 다시 확인하세요.${R}"
+        else
+          ok "${PATH_LABELS[$i]}: ${p} ${DIM}(비어 있음, ${note})${R}"
+        fi ;;
+      *)
+        ok "${PATH_LABELS[$i]}: ${p} ${DIM}(${note}$([[ $ex == yes && $em == no ]] && echo ', 기존 내용 있음'))${R}" ;;
+    esac
+    # 데이터·백업 경로는 여유 공간이 적으면 곧 문제가 됩니다.
+    case ${PATH_KEYS[$i]} in
+      postgresql_data_dir|pgbackrest_repo_path)
+        [[ $fr =~ ^[0-9]+$ ]] && (( fr < 2048 )) && \
+          warn "  여유 공간이 ${fr}MB 뿐입니다 — 별도 디스크 사용을 권장합니다." ;;
+    esac
+  done
+fi
+
+# =============================================================================
+head1 "6/7  비밀번호"
 # =============================================================================
 # 입력이 화면에 표시되지 않으므로(-s) 오타를 그 자리에서 알아챌 수 없습니다.
 # 그래서 아래 확인 단계에서 입력값을 그대로 보여 주고, 틀렸으면 다시 받습니다.
@@ -481,7 +589,7 @@ while :; do
 done
 
 # =============================================================================
-head1 "6/6  확인"
+head1 "7/7  확인"
 # =============================================================================
 row "노드"        "$(paste -d'=' <(printf '%s\n' "${NODE_NAMES[@]}") <(printf '%s\n' "${NODE_IPS[@]}") | tr '\n' ' ')"
 row "etcd"        "$($ETCD_COLOCATED && echo 'DB 노드에 co-location' || echo "${ETCD_IPS[*]}")"
@@ -491,7 +599,13 @@ row "PostgreSQL"  "${PG_VERSION}${PKG_PIN:+  (고정: $PKG_PIN)}"
 row "튜닝 프로파일" "$TUNING_PROFILE"
 row "접속 허용 대역" "${ALLOWED_CIDRS[*]}"
 
-# 비밀번호는 5/6 에서 검토를 마쳤지만, 파일로 쓰기 직전에 한 번 더 보여 줍니다.
+say
+say "  ${B}설치 경로${R}"
+for i in "${!PATH_VARS[@]}"; do
+  row "  ${PATH_LABELS[$i]}" "$(eval echo "\$${PATH_VARS[$i]}")" 28
+done
+
+# 비밀번호는 6/7 에서 검토를 마쳤지만, 파일로 쓰기 직전에 한 번 더 보여 줍니다.
 review_passwords
 say
 row "쓸 파일"      "$INV_FILE"
@@ -596,6 +710,11 @@ umask 077
   echo "postgresql_version: $(yq "$PG_VERSION")"
   echo "postgresql_package_pin: $(yq "$PKG_PIN")"
   echo "postgresql_tuning_profile: $(yq "$TUNING_PROFILE")"
+  echo
+  echo "# --- 설치 경로 ---"
+  for i in "${!PATH_VARS[@]}"; do
+    echo "${PATH_KEYS[$i]}: $(yq "$(eval echo "\$${PATH_VARS[$i]}")")"
+  done
   echo
   echo "# --- 비밀번호 ---"
   echo "postgres_superuser_password: $(yq "$PW_SUPER")"
