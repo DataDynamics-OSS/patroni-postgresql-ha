@@ -118,11 +118,20 @@ if [[ "${PROFILE}" == "delta" || "${PROFILE}" == "both" ]]; then
   # 저장소 목록을 repolist 로 파싱하지 않는다 — 구독 미등록 경고 등이 stdout 에 섞이고
   # 로케일에 따라 헤더 문구도 달라져서 저장소 ID 로 오인된다.
   # 대신 패키지마다 %{reponame} 을 직접 물어 "PGDG/EPEL 이 아닌 저장소가 제공하는가"로 판정.
-  LC_ALL=C dnf repoquery --available \
-      --qf '%{name}-%{version}-%{release}.%{arch}|%{reponame}' 2>/dev/null \
-    | grep -F '|' \
+  # sudo 로 실행해야 합니다. 일반 사용자로 돌리면 dnf 가 저장소 메타데이터를
+  # 사용자 캐시에 다시 받으면서 PGDG GPG 키 임포트를 묻고, 비대화형이라 거부되어
+  # "repomd.xml GPG signature verification error" 로 실패합니다.
+  # 또 실패를 파이프로 흘리면 grep 이 0건을 반환하고 set -e + pipefail 때문에
+  # 아무 메시지 없이 스크립트가 죽습니다. 그래서 조회와 필터를 분리합니다.
+  if ! LC_ALL=C sudo dnf repoquery --available \
+        --qf '%{name}-%{version}-%{release}.%{arch}|%{reponame}' \
+        >"${WORK}/repoquery.out" 2>"${WORK}/repoquery.err"; then
+    sed -n '1,20p' "${WORK}/repoquery.err" >&2
+    die "dnf repoquery 실패 — 저장소 메타데이터를 읽지 못했습니다(위 오류 참고)."
+  fi
+  grep -F '|' "${WORK}/repoquery.out" \
     | grep -viE '\|(pgdg|epel|patroni-airgap)' \
-    | cut -d'|' -f1 | sort -u > "${WORK}/os_available.txt"
+    | cut -d'|' -f1 | sort -u > "${WORK}/os_available.txt" || true
   [[ -s "${WORK}/os_available.txt" ]] \
     || die "OS 저장소 패키지 목록이 비었습니다(BaseOS/AppStream 활성화 필요)."
   echo "    OS 저장소 제공 패키지: $(wc -l < "${WORK}/os_available.txt")개"
