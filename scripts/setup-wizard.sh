@@ -343,14 +343,65 @@ read -r -a ALLOWED_CIDRS <<<"$ALLOWED_CIDRS_RAW"
 say
 ask TUNING_PROFILE "튜닝 프로파일 ${DIM}(minimal|oltp|olap|mixed)${R}" "$(prev "$VAR_FILE" postgresql_tuning_profile "$(prev group_vars/all/main.yml postgresql_tuning_profile minimal)")"
 
-# RHEL 9.4 처럼 OpenSSL 이 낮은 환경은 최신 PGDG 빌드를 못 씁니다.
+# --- 설치 가능한 PostgreSQL 빌드 자동 결정 -----------------------------------
+# PGDG 최신 빌드는 OS 보다 새로운 OpenSSL 을 요구하는 경우가 있습니다.
+# (예: RHEL 9.4 = OpenSSL 3.0 인데 PGDG rhel9.7/9.8 빌드는 OPENSSL_3.4.0 요구)
+# 빌드 이름의 rhelX.Y 접미사로는 판별할 수 없어서 — rhel9.7 빌드가 9.7 에서도
+# 실패합니다 — 노드에서 실제로 depsolve 를 돌려 설치 가능한 최신 빌드를 찾습니다.
 PKG_PIN=$(prev "$VAR_FILE" postgresql_package_pin)
 say
-say "${DIM}  PGDG 최신 빌드가 OS 의 OpenSSL 보다 높은 버전을 요구해 설치가 깨지는 경우가${R}"
-say "${DIM}  있습니다. 그럴 때만 특정 빌드로 고정하세요. 비워 두면 최신을 씁니다.${R}"
-say "${DIM}  확인: dnf --showduplicates list postgresql${PG_VERSION}-server${R}"
-read -r -p "  패키지 버전 고정 ${DIM}[${PKG_PIN:-없음}]${R}: " _pin || die "입력이 끊겼습니다(EOF)."
-PKG_PIN=${_pin:-$PKG_PIN}
+say "${DIM}  설치 가능한 PostgreSQL ${PG_VERSION} 빌드를 노드에서 확인하는 중...${R}"
+
+PGCHECK_SH=$(mktemp)
+cat >"$PGCHECK_SH" <<PGEOF
+V=${PG_VERSION}
+SUDO=""; [ "\$(id -u)" != "0" ] && SUDO="sudo -n"
+# PGDG 저장소가 아직 없으면 판정할 수 없습니다(최초 배포 전).
+if ! \$SUDO dnf --showduplicates list "postgresql\${V}-server" >/dev/null 2>&1; then
+  echo "PGCHECK|state=norepo"; exit 0
+fi
+vers=\$(\$SUDO dnf --showduplicates list "postgresql\${V}-server" 2>/dev/null \\
+       | awk '/postgresql/ {print \$2}' | sort -Vr | head -8)
+best=""; latest=\$(echo "\$vers" | head -1)
+for v in \$vers; do
+  out=\$(\$SUDO dnf --assumeno install "postgresql\${V}-server-\$v" "postgresql\${V}-contrib-\$v" 2>&1)
+  # --assumeno 는 depsolve 가 성공해도 종료코드 1 이므로 메시지로 판정합니다.
+  if ! echo "\$out" | grep -qiE 'Depsolve Error|nothing provides|no match for argument'; then
+    best="\$v"; break
+  fi
+done
+echo "PGCHECK|state=ok|best=\${best}|latest=\${latest}"
+PGEOF
+
+PGCHECK_OUT=$(ssh -o BatchMode=yes -o ConnectTimeout=15 "${SSH_USER}@${NODE_IPS[0]}" \
+                bash -s <"$PGCHECK_SH" 2>/dev/null | grep '^PGCHECK|')
+rm -f "$PGCHECK_SH"
+
+PG_STATE=$(sed -n 's/.*|state=\([^|]*\).*/\1/p' <<<"$PGCHECK_OUT")
+PG_BEST=$(sed -n 's/.*|best=\([^|]*\).*/\1/p' <<<"$PGCHECK_OUT")
+PG_LATEST=$(sed -n 's/.*|latest=\([^|]*\).*/\1/p' <<<"$PGCHECK_OUT")
+
+if [[ $PG_STATE == ok && -n $PG_BEST ]]; then
+  if [[ $PG_BEST == "$PG_LATEST" ]]; then
+    ok "최신 빌드(${PG_LATEST})가 설치 가능합니다 — 버전 고정이 필요 없습니다."
+    PKG_PIN=""
+  else
+    warn "최신 빌드(${PG_LATEST})는 이 OS 에 설치할 수 없습니다(OpenSSL 요구 불일치)."
+    ok  "설치 가능한 최신 빌드: ${B}${PG_BEST}${R} — 이 값으로 고정합니다."
+    PKG_PIN=$PG_BEST
+  fi
+elif [[ $PG_STATE == ok ]]; then
+  err "설치 가능한 빌드를 찾지 못했습니다. PGDG 저장소/OS 조합을 확인하세요."
+  ask_yn "그래도 계속할까요?" n || die "사용자가 취소했습니다."
+else
+  warn "PGDG 저장소가 아직 없어 지금은 판정할 수 없습니다(최초 배포 전이면 정상)."
+  say  "${DIM}    배포가 OpenSSL 의존성 오류로 실패하면, 저장소가 생긴 뒤 이 마법사를${R}"
+  say  "${DIM}    다시 실행하세요. 그때는 설치 가능한 빌드를 자동으로 찾아 줍니다.${R}"
+fi
+
+say
+read -r -p "  패키지 버전 고정 ${DIM}[${PKG_PIN:-고정 안 함}]${R}: " _pin || die "입력이 끊겼습니다(EOF)."
+[[ -n $_pin ]] && PKG_PIN=$_pin
 
 # =============================================================================
 head1 "5/6  비밀번호"
