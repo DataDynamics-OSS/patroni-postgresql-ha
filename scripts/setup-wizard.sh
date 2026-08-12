@@ -110,6 +110,30 @@ ask_pw() {
 # YAML 문자열 안전 인용 — 작은따옴표로 감싸고 내부 작은따옴표는 두 번 반복
 yq() { local s=${1//\'/\'\'}; printf "'%s'" "$s"; }
 
+# 터미널 표시 폭. 한글·CJK 는 두 칸을 차지하므로 printf 의 %-Ns 로는 정렬이
+# 어긋납니다. 폭을 직접 세어 패딩합니다.
+dwidth() {
+  local s=$1 w=0 i c
+  for (( i=0; i<${#s}; i++ )); do
+    c=${s:i:1}
+    case $c in
+      [가-힣ㄱ-ㅎㅏ-ㅣ一-鿿ぁ-ゟ゠-ヿ]) w=$((w+2)) ;;
+      *) w=$((w+1)) ;;
+    esac
+  done
+  echo "$w"
+}
+
+# 레이블을 표시 폭 기준으로 정렬해 한 줄 출력
+row() {
+  # 주의: local 한 줄에서 앞의 변수를 참조하면 안 됩니다. bash 는 대입 전에
+  # 줄 전체를 확장하므로 set -u 아래에서 "unbound variable" 이 납니다.
+  local label=$1 value=$2 width=${3:-22} pad
+  pad=$(( width - $(dwidth "$label") ))
+  (( pad < 1 )) && pad=1
+  printf "  %s%*s %s\n" "$label" "$pad" "" "$value"
+}
+
 valid_ip() {
   local ip=$1 o
   [[ $ip =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
@@ -406,30 +430,72 @@ read -r -p "  패키지 버전 고정 ${DIM}[${PKG_PIN:-고정 안 함}]${R}: " 
 # =============================================================================
 head1 "5/6  비밀번호"
 # =============================================================================
-say "${DIM}  Enter 만 누르면 20자 임의 문자열이 만들어집니다(영숫자 — 접속 문자열 안전).${R}"
+# 입력이 화면에 표시되지 않으므로(-s) 오타를 그 자리에서 알아챌 수 없습니다.
+# 그래서 아래 확인 단계에서 입력값을 그대로 보여 주고, 틀렸으면 다시 받습니다.
 
-ask_pw PW_SUPER  "PostgreSQL superuser"      "$(prev "$VAR_FILE" postgres_superuser_password)"
-ask_pw PW_REPL   "복제 계정(replicator)"      "$(prev "$VAR_FILE" postgres_replication_password)"
-ask_pw PW_REWIND "pg_rewind 계정"             "$(prev "$VAR_FILE" patroni_rewind_password)"
-ask_pw PW_APP    "애플리케이션 DB 계정"        "$(prev "$VAR_FILE" app_db_password)"
-ask_pw PW_REST   "Patroni REST API"           "$(prev "$VAR_FILE" patroni_restapi_password)"
-ask_pw PW_PGB    "PgBouncer 관리자"           "$(prev "$VAR_FILE" pgbouncer_admin_password)"
-ask_pw PW_KA     "keepalived VRRP 인증(8자)"   "$(prev "$VAR_FILE" keepalived_auth_pass)" 8
+# 레이블 / 변수명 / group_vars 키 / 길이 — 한 곳에서 관리합니다.
+PW_LABELS=("PostgreSQL superuser" "복제 계정(replicator)" "pg_rewind 계정" \
+           "애플리케이션 DB 계정" "Patroni REST API" "PgBouncer 관리자" "keepalived VRRP 인증")
+PW_VARS=(PW_SUPER PW_REPL PW_REWIND PW_APP PW_REST PW_PGB PW_KA)
+PW_KEYS=(postgres_superuser_password postgres_replication_password patroni_rewind_password \
+         app_db_password patroni_restapi_password pgbouncer_admin_password keepalived_auth_pass)
+PW_LENS=(20 20 20 20 20 20 8)
+
+collect_passwords() {
+  # 첫 입력과 재입력은 Enter 의 의미가 달라서(생성 / 유지) 안내를 나눕니다.
+  if [[ ${1:-first} == first ]]; then
+    say "${DIM}  Enter 만 누르면 임의 문자열이 만들어집니다(영숫자 — 접속 문자열 안전).${R}"
+  else
+    say "${DIM}  고칠 항목만 새로 입력하세요. Enter 를 누르면 기존 값이 유지됩니다.${R}"
+  fi
+  local i
+  for i in "${!PW_VARS[@]}"; do
+    # 재입력일 때는 방금 넣은 값이, 최초에는 기존 파일의 값이 기본값이 됩니다.
+    local cur=${!PW_VARS[$i]:-}
+    [[ -z $cur ]] && cur=$(prev "$VAR_FILE" "${PW_KEYS[$i]}")
+    ask_pw "${PW_VARS[$i]}" "${PW_LABELS[$i]}" "$cur" "${PW_LENS[$i]}"
+  done
+}
+
+# 입력한 비밀번호를 그대로 보여 주고 검토받습니다.
+review_passwords() {
+  local i v
+  say
+  say "  ${B}입력한 비밀번호${R} ${DIM}— 오타가 없는지 확인하세요.${R}"
+  say "  ${DIM}$(printf '─%.0s' {1..60})${R}"
+  for i in "${!PW_VARS[@]}"; do
+    v=${!PW_VARS[$i]}
+    printf "  %s%*s ${C}%s${R}  ${DIM}(%d자)${R}\n" \
+      "${PW_LABELS[$i]}" "$(( 24 - $(dwidth "${PW_LABELS[$i]}") ))" "" "$v" "${#v}"
+  done
+  say "  ${DIM}$(printf '─%.0s' {1..60})${R}"
+}
+
+collect_passwords
+while :; do
+  review_passwords
+  say
+  ask_yn "이 비밀번호로 진행할까요?" y && break
+  say
+  collect_passwords again
+done
 
 # =============================================================================
 head1 "6/6  확인"
 # =============================================================================
-printf "  %-22s %s\n" "노드"        "$(paste -d'=' <(printf '%s\n' "${NODE_NAMES[@]}") <(printf '%s\n' "${NODE_IPS[@]}") | tr '\n' ' ')"
-printf "  %-22s %s\n" "etcd"        "$($ETCD_COLOCATED && echo 'DB 노드에 co-location' || echo "${ETCD_IPS[*]}")"
-printf "  %-22s %s\n" "VIP"         "${CLUSTER_VIP}/${CLUSTER_VIP_CIDR} dev ${B}${VIP_INTERFACE}${R}"
-printf "  %-22s %s\n" "클러스터 이름" "$CLUSTER_NAME"
-printf "  %-22s %s\n" "PostgreSQL"  "${PG_VERSION}${PKG_PIN:+  (고정: $PKG_PIN)}"
-printf "  %-22s %s\n" "튜닝 프로파일" "$TUNING_PROFILE"
-printf "  %-22s %s\n" "접속 허용 대역" "${ALLOWED_CIDRS[*]}"
-printf "  %-22s %s\n" "비밀번호"     "7종 설정됨 ${DIM}(${VAR_FILE} 에 0600 으로 저장)${R}"
+row "노드"        "$(paste -d'=' <(printf '%s\n' "${NODE_NAMES[@]}") <(printf '%s\n' "${NODE_IPS[@]}") | tr '\n' ' ')"
+row "etcd"        "$($ETCD_COLOCATED && echo 'DB 노드에 co-location' || echo "${ETCD_IPS[*]}")"
+row "VIP"         "${CLUSTER_VIP}/${CLUSTER_VIP_CIDR} dev ${B}${VIP_INTERFACE}${R}"
+row "클러스터 이름" "$CLUSTER_NAME"
+row "PostgreSQL"  "${PG_VERSION}${PKG_PIN:+  (고정: $PKG_PIN)}"
+row "튜닝 프로파일" "$TUNING_PROFILE"
+row "접속 허용 대역" "${ALLOWED_CIDRS[*]}"
+
+# 비밀번호는 5/6 에서 검토를 마쳤지만, 파일로 쓰기 직전에 한 번 더 보여 줍니다.
+review_passwords
 say
-printf "  %-22s %s\n" "쓸 파일"      "$INV_FILE"
-printf "  %-22s %s\n" ""            "$VAR_FILE"
+row "쓸 파일"      "$INV_FILE"
+row ""            "$VAR_FILE  ${DIM}(0600 — 비밀번호 평문 저장)${R}"
 
 if $DRY_RUN; then
   say; say "${Y}--dry-run 이므로 파일을 쓰지 않고 종료합니다.${R}"; exit 0
