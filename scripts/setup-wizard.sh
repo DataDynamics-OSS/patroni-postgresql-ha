@@ -264,11 +264,16 @@ os=$( . /etc/os-release 2>/dev/null; echo "${ID:-?} ${VERSION_ID:-?}" )
 sudook=no; sudo -n true 2>/dev/null && sudook=yes
 [ "$(id -u)" = "0" ] && sudook=yes
 py=no; command -v python3 >/dev/null 2>&1 && py=yes
+# venv 후보 인터프리터 목록(설치돼 있는 것만)
+pys=""
+for c in python3.13 python3.12 python3.11 python3.10 python3.9; do
+  command -v "$c" >/dev/null 2>&1 && pys="${pys}${pys:+,}$c"
+done
 allips=$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | paste -sd, -)
-echo "PROBE|nic=${nic}|pfx=${cidr#*/}|ip=${me}|os=${os}|sudo=${sudook}|py=${py}|all=${allips}"
+echo "PROBE|nic=${nic}|pfx=${cidr#*/}|ip=${me}|os=${os}|sudo=${sudook}|py=${py}|pys=${pys}|all=${allips}"
 PROBE_EOF
 
-declare -A NIC_OF PFX_OF OS_OF ALLIPS_OF
+declare -A NIC_OF PFX_OF OS_OF ALLIPS_OF PYS_OF
 UNREACHABLE=()
 for i in "${!NODE_IPS[@]}"; do
   n=${NODE_NAMES[$i]}; ip=${NODE_IPS[$i]}
@@ -279,6 +284,7 @@ for i in "${!NODE_IPS[@]}"; do
   PFX_OF[$n]=$(LC_ALL=C sed -n 's/.*|pfx=\([^|]*\).*/\1/p' <<<"$out")
   OS_OF[$n]=$(LC_ALL=C sed -n 's/.*|os=\([^|]*\).*/\1/p' <<<"$out")
   ALLIPS_OF[$n]=$(LC_ALL=C sed -n 's/.*|all=\([^|]*\).*/\1/p' <<<"$out")
+  PYS_OF[$n]=$(LC_ALL=C sed -n 's/.*|pys=\([^|]*\).*/\1/p' <<<"$out")
   [[ $(LC_ALL=C sed -n 's/.*|sudo=\([^|]*\).*/\1/p' <<<"$out") == yes ]] || \
     warn "${n}: 무패스워드 sudo 불가 — 배포가 실패합니다. sudoers 를 먼저 정리하세요."
   [[ $(LC_ALL=C sed -n 's/.*|py=\([^|]*\).*/\1/p' <<<"$out") == yes ]] || \
@@ -448,6 +454,31 @@ say
 read -r -p "  패키지 버전 고정 ${DIM}[${PKG_PIN:-고정 안 함}]${R}: " _pin || die "입력이 끊겼습니다(EOF)."
 [[ -n $_pin ]] && PKG_PIN=$_pin
 
+# --- Patroni venv 파이썬 -----------------------------------------------------
+# 같은 서버에 Airflow 같은 다른 앱이 있으면 런타임을 맞춰 두는 편이 관리가 쉽습니다.
+# RHEL 9 의 /usr/bin/python3(=3.9)는 dnf·firewalld 가 쓰는 OS 전용이라 손대지 않고,
+# 애플리케이션 런타임만 맞춥니다.
+say
+say "${DIM}  Patroni 는 전용 venv 에 설치됩니다. 그 venv 를 만들 파이썬을 고르세요.${R}"
+say "${DIM}  폐쇄망 번들의 wheel ABI(cp39/cp311)가 이 값으로 결정됩니다.${R}"
+AVAIL_PY=${PYS_OF[${NODE_NAMES[0]}]:-}
+[[ -n $AVAIL_PY ]] && ok "노드에 설치된 인터프리터: ${B}${AVAIL_PY//,/ }${R}"
+
+DEF_PY=$(prev "$VAR_FILE" patroni_python "$(prev group_vars/all/main.yml patroni_python python3.11)")
+while :; do
+  ask PATRONI_PY "Patroni venv 파이썬" "$DEF_PY"
+  if [[ ! $PATRONI_PY =~ ^python3(\.[0-9]+)?$ ]]; then
+    err "python3 또는 python3.N 형식이어야 합니다: [${PATRONI_PY}]"; continue
+  fi
+  # 노드에 없으면 배포 중 설치를 시도하지만, 미리 알려 주는 편이 낫습니다.
+  if [[ -n $AVAIL_PY && ,${AVAIL_PY}, != *,${PATRONI_PY},* ]]; then
+    warn "노드에 ${PATRONI_PY} 이 없습니다. 배포 시 ${PATRONI_PY}, ${PATRONI_PY}-pip 설치를 시도합니다."
+    warn "폐쇄망이라면 번들에 해당 RPM 이 포함돼 있어야 합니다."
+    ask_yn "이 값으로 진행할까요?" n || continue
+  fi
+  break
+done
+
 # =============================================================================
 head1 "5/7  설치 경로"
 # =============================================================================
@@ -616,6 +647,7 @@ row "VIP"         "${CLUSTER_VIP}/${CLUSTER_VIP_CIDR} dev ${B}${VIP_INTERFACE}${
 row "클러스터 이름" "$CLUSTER_NAME"
 row "PostgreSQL"  "${PG_VERSION}${PKG_PIN:+  (고정: $PKG_PIN)}"
 row "튜닝 프로파일" "$TUNING_PROFILE"
+row "Patroni venv 파이썬" "$PATRONI_PY"
 row "접속 허용 대역" "${ALLOWED_CIDRS[*]}"
 
 say
@@ -729,6 +761,9 @@ umask 077
   echo "postgresql_version: $(yq "$PG_VERSION")"
   echo "postgresql_package_pin: $(yq "$PKG_PIN")"
   echo "postgresql_tuning_profile: $(yq "$TUNING_PROFILE")"
+  echo
+  echo "# venv 파이썬 — 폐쇄망 번들의 wheel ABI 와 반드시 일치해야 합니다"
+  echo "patroni_python: $(yq "$PATRONI_PY")"
   echo
   echo "# --- 설치 경로 ---"
   for i in "${!PATH_VARS[@]}"; do

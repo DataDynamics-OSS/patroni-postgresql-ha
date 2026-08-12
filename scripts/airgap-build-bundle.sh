@@ -36,10 +36,14 @@ PG_PIN="${PG_PIN:-}"
 ETCD_VER="${ETCD_VER:-3.5.16}"
 
 # 대상 노드에서 Patroni venv 를 만들 파이썬. wheel 의 ABI 태그(cp39/cp311)를 결정하므로
-# **대상의 `python3` 와 반드시 같아야 한다.** RHEL 9 기본은 python3.9.
-# (빌드 호스트에 3.11 이 깔려 있고 python3 가 그걸 가리키면 cp311 wheel 이 담겨
-#  폐쇄망에서 "no matching distribution" 으로 실패한다.)
-VENV_PY="${VENV_PY:-python3.9}"
+# **group_vars/all/main.yml 의 patroni_python 과 반드시 같아야 한다.**
+# (어긋나면 폐쇄망에서 "no matching distribution" 으로 설치가 실패한다.)
+#
+# 기본값은 python3.11 이다. RHEL 9 의 /usr/bin/python3 는 3.9 지만 그것은 OS
+# 전용(dnf/firewalld/SELinux)이고, 같은 서버에 Airflow 등을 함께 올리는 구성에서
+# 애플리케이션 런타임을 3.11 로 맞추는 편이 관리가 쉽다.
+# 3.9 로 되돌리려면 VENV_PY=python3.9 로 빌드하고 patroni_python 도 함께 바꾼다.
+VENV_PY="${VENV_PY:-python3.11}"
 
 # RHEL 9 시스템 Python 3.9 와 호환되는 ansible-core 범위 (2.16+ 는 Python 3.10+ 요구)
 ANSIBLE_SPEC="${ANSIBLE_SPEC:-ansible-core>=2.15,<2.16}"
@@ -77,6 +81,13 @@ PKGS_OS=(
   haproxy
   keepalived
 )
+# venv 를 시스템 기본(python3=3.9)이 아닌 인터프리터로 만드는 경우, 그 인터프리터
+# 자체도 번들에 담아야 폐쇄망에서 venv 를 만들 수 있다. RHEL 9 는 python3.11 을
+# AppStream 에서 제공하며 psycopg2 도 같은 접두사의 패키지가 따로 있다.
+#   python3.11  python3.11-pip  python3.11-psycopg2
+if [[ "${VENV_PY}" != "python3" && "${VENV_PY}" =~ ^python3\.[0-9]+$ ]]; then
+  PKGS_OS+=("${VENV_PY}" "${VENV_PY}-pip" "${VENV_PY}-psycopg2")
+fi
 if [[ "${WITH_PGBACKREST}" == "1" ]]; then
   # pgbackrest 는 EPEL 의 libssh2 에 의존한다(TESTING.md FINDING-9).
   PKGS_PGDG+=(pgbackrest)
